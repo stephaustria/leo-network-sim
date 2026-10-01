@@ -1,32 +1,6 @@
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, func, select
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy import func, select
 
-from app.db.models import Base, FlowSample, TickMetric
-from app.db.session import get_db, get_session_factory
-from app.main import app
-
-
-@pytest.fixture()
-def env():
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
-                           poolclass=StaticPool)
-    Base.metadata.create_all(engine)
-    Session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
-
-    def override_db():
-        db = Session()
-        try:
-            yield db
-        finally:
-            db.close()
-
-    app.dependency_overrides[get_db] = override_db
-    app.dependency_overrides[get_session_factory] = lambda: Session
-    yield TestClient(app), Session     # no `with`: skips the Postgres lifespan hook
-    app.dependency_overrides.clear()
+from app.db.models import FlowSample, TickMetric
 
 
 def make_run(client, **overrides):
@@ -51,7 +25,7 @@ def test_run_lifecycle(env):
 
     links = client.get(f"/runs/{run_id}/links").json()          # latest tick
     assert links["t"] == 300
-    assert all(l["load_gbps"] > 0 for l in links["links"])
+    assert all(l["load_gbps"] > 0 or l["kind"] == "ground" for l in links["links"])
 
     ho = client.get(f"/runs/{run_id}/handoffs?include_acquired=true").json()
     assert any(h["reason"] == "acquired" for h in ho)

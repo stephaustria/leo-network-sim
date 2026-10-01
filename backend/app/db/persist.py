@@ -8,6 +8,7 @@ from app.db.models import (FlowSample, HandoffRecord, LinkSample, SimulationRun,
                            TickMetric)
 from app.db.session import SessionLocal
 from app.sim.engine import Simulation, StepResult
+from app.sim.stream import links_from_graph
 
 
 def persist_tick(db: Session, run_id: int, res: StepResult) -> None:
@@ -19,13 +20,7 @@ def persist_tick(db: Session, run_id: int, res: StepResult) -> None:
         for e in res.handoffs
     )
     db.add_all(FlowSample(run_id=run_id, t=t, **asdict(f)) for f in res.flows)
-    db.add_all(
-        LinkSample(run_id=run_id, t=t, u=u, v=v, kind=d["kind"],
-                   distance_km=d["distance_km"], load_gbps=d["load_gbps"],
-                   capacity_gbps=d["capacity_gbps"], utilization=d["utilization"],
-                   queue_ms=d["queue_ms"], loss_eff=d["loss_eff"])
-        for u, v, d in res.graph.edges(data=True) if d["load_gbps"] > 0
-    )
+    db.add_all(LinkSample(run_id=run_id, t=t, **l) for l in links_from_graph(res.graph))
 
 
 def execute_run(run_id: int, session_factory=SessionLocal) -> None:
