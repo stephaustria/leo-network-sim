@@ -22,9 +22,13 @@ def is_gs(n: str) -> bool:
     return n[0] == "G"
 
 
-def build_graph(model: LinkModel, t: float) -> nx.Graph:
-    """Network graph of the constellation at time t."""
-    snap = model.snapshot(t)
+def build_graph(model: LinkModel, t: float, snap=None, serving: dict | None = None,
+                handoff_stations=()) -> nx.Graph:
+    """Network graph at time t.
+    serving: {station_index: sat_index or None}. If given, each station only gets
+    a ground link to its serving satellite. If None, all visible links are included."""
+    if snap is None:
+        snap = model.snapshot(t)
     lat, lon, alt = ecef_to_latlon_alt(model.c.positions_ecef(t))
     c = model.c
 
@@ -49,8 +53,11 @@ def build_graph(model: LinkModel, t: float) -> nx.Graph:
 
     gl = snap.ground
     for k in range(len(gl.sat)):
+        g, s = int(gl.station[k]), int(gl.sat[k])
+        if serving is not None and serving.get(g) != s:
+            continue
         G.add_edge(
-            gs_node(gl.station[k]), sat_node(gl.sat[k]),
+            gs_node(g), sat_node(s),
             kind="ground",
             distance_km=float(gl.range_km[k]),
             elevation_deg=float(gl.elevation_deg[k]),
@@ -58,6 +65,7 @@ def build_graph(model: LinkModel, t: float) -> nx.Graph:
             capacity_gbps=float(gl.capacity_gbps[k]),
             loss=float(gl.loss[k]),
             load_gbps=0.0,
+            handoff=g in handoff_stations,
         )
     return G
 
