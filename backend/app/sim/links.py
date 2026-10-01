@@ -26,6 +26,7 @@ class LinkParams:
 class IslLinks:
     a: np.ndarray
     b: np.ndarray
+    cross_plane: np.ndarray
     distance_km: np.ndarray
     latency_ms: np.ndarray
     capacity_gbps: np.ndarray
@@ -119,6 +120,7 @@ class LinkModel:
         dist = dist[ok]
         return IslLinks(
             a=a[ok], b=b[ok],
+            cross_plane=self.is_cross[ok],
             distance_km=dist / 1000,
             latency_ms=dist / C_LIGHT * 1000 + p.node_processing_ms,
             capacity_gbps=np.full(dist.shape, p.isl_capacity_gbps),
