@@ -2,7 +2,8 @@ from dataclasses import dataclass
 
 import networkx as nx
 
-from .graph import TopologyDelta, build_graph, diff_graphs
+from .failures import FailureSchedule, FailureState, apply_failures
+from .graph import TopologyDelta, build_graph, diff_graphs, gs_node, sat_node
 from .links import LinkModel
 from .routing import Flow, FlowResult, TrafficParams, default_flows, route_flows
 from .serving import HandoffEvent, ServingTracker
@@ -20,6 +21,7 @@ class StepResult:
     handoffs: list[HandoffEvent]
     flows: list[FlowResult]
     metrics: dict
+    failures: FailureState | None = None
 
     def flows_detail(self) -> list[dict]:
         return [f.to_dict() for f in self.flows]
@@ -58,24 +60,33 @@ class Simulation:
 
     def __init__(self, model: LinkModel, flows: list[Flow] | None = None,
                  params: TrafficParams = TrafficParams(), load_scale: float = 1.0,
-                 hysteresis_deg: float = 15.0):
+                 hysteresis_deg: float = 15.0, schedule: FailureSchedule | None = None):
         self.model = model
         self.flows = flows if flows is not None else default_flows(len(model.stations))
         self.params = params
         self.load_scale = load_scale
         self.serving = ServingTracker(hysteresis_deg)
+        self.schedule = schedule if schedule is not None else FailureSchedule()
         self.prev: nx.Graph | None = None
 
     def tick(self, t: float) -> StepResult:
         snap = self.model.snapshot(t)
+        state = self.schedule.active_at(t, self.model.c)
+        snap = apply_failures(snap, state, self.model.c.n_sats)   # failures act before selection
+
         events = self.serving.update(t, snap.ground, len(self.model.stations))
         fresh = {e.station for e in events if e.reason in ("better", "lost")}
 
         G = build_graph(self.model, t, snap=snap, serving=dict(self.serving.serving),
                         handoff_stations=fresh)
+        for s in state.sats:
+            G.nodes[sat_node(s)]["failed"] = True
+        for g in state.stations:
+            G.nodes[gs_node(g)]["failed"] = True
+
         delta = diff_graphs(self.prev, G) if self.prev is not None else None
         results = route_flows(G, self.flows, self.params, self.load_scale)
         self.prev = G
 
         return StepResult(t, G, delta, events, results,
-                          compute_metrics(t, G, results, events, delta))
+                          compute_metrics(t, G, results, events, delta), failures=state)
