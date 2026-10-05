@@ -52,3 +52,22 @@ def test_delete_removes_everything(env):
 def test_unknown_run_is_404(env):
     client, _ = env
     assert client.get("/runs/999/timeline").status_code == 404
+
+def test_run_with_policy_and_failures(env):
+    client, _ = env
+    run_id = make_run(client, duration=120, policy="min_hop",
+                      failures=[{"kind": "station", "target": 0}])
+
+    run = client.get(f"/runs/{run_id}").json()
+    assert run["params"]["policy"] == "min_hop"
+    assert run["params"]["failures"][0]["kind"] == "station"
+
+    tl = client.get(f"/runs/{run_id}/timeline").json()
+    assert all(row["flows_reachable"] <= 10 for row in tl)   # station 0's 5 flows are down
+    assert all("route_changes" in row and "mean_hops" in row for row in tl)
+
+
+def test_run_rejects_bad_policy_and_failures(env):
+    client, _ = env
+    assert client.post("/runs", json={"policy": "random"}).status_code == 422
+    assert client.post("/runs", json={"failures": [{"kind": "satellite", "target": 99999}]}).status_code == 422

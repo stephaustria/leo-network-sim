@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import networkx as nx
 
@@ -27,7 +27,7 @@ class StepResult:
         return [f.to_dict() for f in self.flows]
 
 
-def compute_metrics(t, G, flows, handoffs, delta) -> dict:
+def compute_metrics(t, G, flows, handoffs, delta, route_changes: int = 0) -> dict:
     reach = [f for f in flows if f.reachable]
     demand = sum(f.demand_gbps for f in reach)
     delivered = sum(f.delivered_gbps for f in reach)
@@ -52,6 +52,8 @@ def compute_metrics(t, G, flows, handoffs, delta) -> dict:
         "outages": sum(e.reason == "outage" for e in handoffs),
         "links_added": len(delta.added) if delta else 0,
         "links_removed": len(delta.removed) if delta else 0,
+        "mean_hops": _r(sum(f.hops * f.demand_gbps for f in reach) / demand, 2) if demand else None,
+        "route_changes": route_changes,
     }
 
 
@@ -60,14 +62,16 @@ class Simulation:
 
     def __init__(self, model: LinkModel, flows: list[Flow] | None = None,
                  params: TrafficParams = TrafficParams(), load_scale: float = 1.0,
-                 hysteresis_deg: float = 15.0, schedule: FailureSchedule | None = None):
+                 hysteresis_deg: float = 15.0, schedule: FailureSchedule | None = None,
+                 policy: str | None = None):
         self.model = model
         self.flows = flows if flows is not None else default_flows(len(model.stations))
-        self.params = params
+        self.params = replace(params, policy=policy) if policy else params
         self.load_scale = load_scale
         self.serving = ServingTracker(hysteresis_deg)
         self.schedule = schedule if schedule is not None else FailureSchedule()
         self.prev: nx.Graph | None = None
+        self.prev_paths: dict[tuple[str, str], tuple[str, ...]] = {}
 
     def tick(self, t: float) -> StepResult:
         snap = self.model.snapshot(t)
@@ -86,7 +90,19 @@ class Simulation:
 
         delta = diff_graphs(self.prev, G) if self.prev is not None else None
         results = route_flows(G, self.flows, self.params, self.load_scale)
+
+        # route stability: primary-path changes between consecutive ticks
+        new_paths: dict[tuple[str, str], tuple[str, ...]] = {}
+        changes = 0
+        for f in results:
+            if not f.reachable:
+                continue
+            key, path = (f.src, f.dst), tuple(f.path)
+            if key in self.prev_paths and self.prev_paths[key] != path:
+                changes += 1
+            new_paths[key] = path
+        self.prev_paths = new_paths
         self.prev = G
 
         return StepResult(t, G, delta, events, results,
-                          compute_metrics(t, G, results, events, delta), failures=state)
+                          compute_metrics(t, G, results, events, delta, changes), failures=state)

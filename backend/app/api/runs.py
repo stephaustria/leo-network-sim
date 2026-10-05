@@ -1,14 +1,16 @@
-from typing import Callable
+from typing import Callable, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from app.api.links import model as link_model
 from app.db.models import (FlowSample, HandoffRecord, LinkSample, SimulationRun,
                            TickMetric)
 from app.db.persist import execute_run
 from app.db.session import get_db, get_session_factory
+from app.sim.failures import FailureSchedule
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -20,11 +22,16 @@ class RunRequest(BaseModel):
     duration: float = Field(1800.0, gt=0, le=7200)
     dt: float = Field(60.0, ge=10, le=600)
     load_scale: float = Field(1.0, ge=0, le=200)
+    policy: Literal["min_hop", "shortest_latency", "congestion_aware"] = "congestion_aware"
+    failures: list[dict] = Field(default_factory=list, max_length=50)
 
     @model_validator(mode="after")
-    def check_tick_count(self):
+    def check_request(self):
         if self.duration // self.dt > MAX_TICKS:
             raise ValueError(f"too many ticks (max {MAX_TICKS}); raise dt or lower duration")
+        # validates kinds, targets and time windows; stores the normalized form
+        sched = FailureSchedule.from_dicts(self.failures, link_model.c, len(link_model.stations))
+        self.failures = sched.to_dicts()
         return self
 
 

@@ -5,6 +5,8 @@ import networkx as nx
 
 from .graph import gs_node
 
+POLICIES = ("min_hop", "shortest_latency", "congestion_aware")
+
 
 @dataclass(frozen=True)
 class TrafficParams:
@@ -13,6 +15,11 @@ class TrafficParams:
     overload_penalty_ms: float = 20.0  # routing-only penalty per 100% overload
     handoff_loss: float = 0.02        # extra loss on a freshly handed-off link
     chunks: int = 4                   # each flow is split into this many chunks
+    policy: str = "congestion_aware"
+
+    def __post_init__(self):
+        if self.policy not in POLICIES:
+            raise ValueError(f"policy must be one of {POLICIES}, got {self.policy!r}")
 
 
 @dataclass(frozen=True)
@@ -57,12 +64,20 @@ def queue_delay_ms(util: float, p: TrafficParams) -> float:
 
 
 def edge_cost(d: dict, p: TrafficParams, extra_gbps: float = 0.0) -> float:
-    """Routing cost: latency + queueing at the utilization *after* adding extra_gbps."""
+    """Congestion-aware cost: latency + queueing at the utilization *after* adding extra_gbps."""
     util = (d["load_gbps"] + extra_gbps) / d["capacity_gbps"]
     cost = d["latency_ms"] + queue_delay_ms(util, p)
     if util > 1.0:
         cost += p.overload_penalty_ms * (util - 1.0)
     return cost
+
+
+def policy_cost(d: dict, p: TrafficParams, extra_gbps: float = 0.0) -> float:
+    if p.policy == "min_hop":
+        return 1.0 + 1e-6 * d["latency_ms"]      # hops first, latency only breaks ties
+    if p.policy == "shortest_latency":
+        return d["latency_ms"]
+    return edge_cost(d, p, extra_gbps)
 
 
 def _route(G: nx.Graph, src: str, dst: str, chunk_gbps: float, p: TrafficParams):
@@ -73,7 +88,7 @@ def _route(G: nx.Graph, src: str, dst: str, chunk_gbps: float, p: TrafficParams)
         for n in (u, v):                    # ground stations can't be transit nodes
             if n[0] == "G" and n != src and n != dst:
                 return None                 # None hides the edge from Dijkstra
-        return edge_cost(d, p, chunk_gbps)
+        return policy_cost(d, p, chunk_gbps)
 
     try:
         return nx.shortest_path(G, src, dst, weight=weight)
@@ -120,6 +135,7 @@ def _flow_result(G: nx.Graph, f: Flow, paths: list[list[str]], demand: float) ->
 def route_flows(G: nx.Graph, flows: list[Flow], p: TrafficParams,
                 load_scale: float = 1.0) -> list[FlowResult]:
     """Greedy incremental assignment. Mutates edge loads in G."""
+    load_aware = p.policy == "congestion_aware"
     chunk_paths: list[list[list[str]]] = [[] for _ in flows]
 
     for _ in range(p.chunks):                       # rounds, so flows share fairly
@@ -127,7 +143,10 @@ def route_flows(G: nx.Graph, flows: list[Flow], p: TrafficParams,
             chunk = f.demand_gbps * load_scale / p.chunks
             if chunk <= 0:
                 continue
-            path = _route(G, f.src, f.dst, chunk, p)
+            if not load_aware and chunk_paths[i]:
+                path = chunk_paths[i][0]            # static policy: same path every chunk
+            else:
+                path = _route(G, f.src, f.dst, chunk, p)
             if path is None:
                 continue
             for u, v in zip(path, path[1:]):
