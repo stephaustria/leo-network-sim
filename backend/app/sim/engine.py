@@ -89,16 +89,19 @@ class Simulation:
             G.nodes[gs_node(g)]["failed"] = True
 
         delta = diff_graphs(self.prev, G) if self.prev is not None else None
-        results = route_flows(G, self.flows, self.params, self.load_scale)
+        results = route_flows(G, self.flows, self.params, self.load_scale,
+                              prev_paths=self.prev_paths)
 
-        # route stability: primary-path changes between consecutive ticks
+        # route stability: path changes between consecutive ticks that are NOT explained
+        # by a ground handoff (the serving satellite at both ends is unchanged)
         new_paths: dict[tuple[str, str], tuple[str, ...]] = {}
         changes = 0
         for f in results:
             if not f.reachable:
                 continue
             key, path = (f.src, f.dst), tuple(f.path)
-            if key in self.prev_paths and self.prev_paths[key] != path:
+            old = self.prev_paths.get(key)
+            if old is not None and old != path and old[1] == path[1] and old[-2] == path[-2]:
                 changes += 1
             new_paths[key] = path
         self.prev_paths = new_paths

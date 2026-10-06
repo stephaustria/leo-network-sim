@@ -2,14 +2,15 @@ import pytest
 
 from app.sim.constellation import Constellation
 from app.sim.engine import Simulation
-from app.sim.links import LinkModel
+from app.sim.links import LinkModel, LinkParams
 from app.sim.routing import TrafficParams
 
 MODEL = LinkModel(Constellation())
+FAST = LinkModel(Constellation(), params=LinkParams(ground_capacity_gbps=100.0))
 
 
-def tick_with(policy, t, load_scale=1.0):
-    return Simulation(MODEL, load_scale=load_scale, policy=policy).tick(t)
+def tick_with(policy, t, load_scale=1.0, model=MODEL):
+    return Simulation(model, load_scale=load_scale, policy=policy).tick(t)
 
 
 def good_tick():
@@ -48,8 +49,8 @@ def test_each_policy_minimizes_its_own_objective():
 
 def test_congestion_aware_spreads_load_better_than_static():
     t = good_tick()
-    static = isl_excess(tick_with("shortest_latency", t, load_scale=100))
-    aware = isl_excess(tick_with("congestion_aware", t, load_scale=100))
+    static = isl_excess(tick_with("shortest_latency", t, load_scale=100, model=FAST))
+    aware = isl_excess(tick_with("congestion_aware", t, load_scale=100, model=FAST))
     assert static > 0
     assert aware <= static
 
@@ -64,3 +65,15 @@ def test_route_changes_counted_over_time():
     changes = [sim.tick(t).metrics["route_changes"] for t in range(0, 1440, 120)]
     assert changes[0] == 0
     assert sum(changes) > 0
+
+def test_invalid_stickiness_rejected():
+    with pytest.raises(ValueError):
+        TrafficParams(route_stickiness=1.0)
+
+
+def test_route_stickiness_reduces_flapping():
+    def total_changes(stick):
+        sim = Simulation(MODEL, params=TrafficParams(route_stickiness=stick), policy="min_hop")
+        return sum(sim.tick(t).metrics["route_changes"] for t in range(0, 1200, 120))
+
+    assert total_changes(0.2) <= total_changes(0.0)

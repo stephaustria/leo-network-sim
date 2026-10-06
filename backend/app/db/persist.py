@@ -10,6 +10,8 @@ from app.db.session import SessionLocal
 from app.sim.engine import Simulation, StepResult
 from app.sim.failures import FailureSchedule
 from app.sim.stream import links_from_graph
+from app.sim.links import with_overrides
+from app.sim.routing import TrafficParams
 
 
 def persist_tick(db: Session, run_id: int, res: StepResult) -> None:
@@ -31,12 +33,13 @@ def execute_run(run_id: int, session_factory=SessionLocal) -> None:
         run = db.get(SimulationRun, run_id)
         p = run.params
         steps = int(p["duration"] // p["dt"])
+        lm = with_overrides(link_model, p.get("link_params"))
         sim = Simulation(
-            link_model,
+            lm,
             load_scale=p["load_scale"],
+            params=TrafficParams(route_stickiness=p.get("route_stickiness", 0.0)),
             policy=p.get("policy", "congestion_aware"),
-            schedule=FailureSchedule.from_dicts(
-                p.get("failures"), link_model.c, len(link_model.stations)),
+            schedule=FailureSchedule.from_dicts(p.get("failures"), lm.c, len(lm.stations)),
         )
 
         for k in range(steps + 1):

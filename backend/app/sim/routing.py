@@ -6,7 +6,7 @@ import networkx as nx
 from .graph import gs_node
 
 POLICIES = ("min_hop", "shortest_latency", "congestion_aware")
-
+DEFAULT_FLOW_GBPS = 0.15
 
 @dataclass(frozen=True)
 class TrafficParams:
@@ -16,10 +16,13 @@ class TrafficParams:
     handoff_loss: float = 0.02        # extra loss on a freshly handed-off link
     chunks: int = 4                   # each flow is split into this many chunks
     policy: str = "congestion_aware"
+    route_stickiness: float = 0.0     # edges of the previous path get this cost discount
 
     def __post_init__(self):
         if self.policy not in POLICIES:
             raise ValueError(f"policy must be one of {POLICIES}, got {self.policy!r}")
+        if not 0.0 <= self.route_stickiness < 1.0:
+            raise ValueError("route_stickiness must be in [0, 1)")
 
 
 @dataclass(frozen=True)
@@ -52,7 +55,7 @@ class FlowResult:
                 "distinct_paths": self.distinct_paths, "path": self.path}
 
 
-def default_flows(n_stations: int, demand_gbps: float = 0.15) -> list[Flow]:
+def default_flows(n_stations: int, demand_gbps: float = DEFAULT_FLOW_GBPS) -> list[Flow]:
     """Full mesh: one flow per station pair."""
     return [Flow(gs_node(i), gs_node(j), demand_gbps)
             for i in range(n_stations) for j in range(i + 1, n_stations)]
@@ -80,15 +83,19 @@ def policy_cost(d: dict, p: TrafficParams, extra_gbps: float = 0.0) -> float:
     return edge_cost(d, p, extra_gbps)
 
 
-def _route(G: nx.Graph, src: str, dst: str, chunk_gbps: float, p: TrafficParams):
+def _route(G: nx.Graph, src: str, dst: str, chunk_gbps: float, p: TrafficParams, prefer=None):
     if src not in G or dst not in G:
         return None
+    keep = 1.0 - p.route_stickiness
 
     def weight(u, v, d):
         for n in (u, v):                    # ground stations can't be transit nodes
             if n[0] == "G" and n != src and n != dst:
                 return None                 # None hides the edge from Dijkstra
-        return policy_cost(d, p, chunk_gbps)
+        cost = policy_cost(d, p, chunk_gbps)
+        if prefer and frozenset((u, v)) in prefer:
+            cost *= keep                    # stickiness: favor the previous path
+        return cost
 
     try:
         return nx.shortest_path(G, src, dst, weight=weight)
@@ -131,12 +138,53 @@ def _flow_result(G: nx.Graph, f: Flow, paths: list[list[str]], demand: float) ->
     return FlowResult(f.src, f.dst, demand, True, lat, loss, delivered,
                       len(primary) - 1, max_util, len({tuple(x) for x in paths}), primary)
 
+ATTENUATION_ITERATIONS = 8
+
+
+def attenuate_loads(G: nx.Graph, assigned: list[tuple[list[str], float]], p: TrafficParams) -> None:
+    """Replace offered loads by carried loads.
+
+    Traffic dropped upstream no longer loads downstream links. Link survival depends
+    on its load, and its load depends on upstream survival, so this is solved as a
+    damped fixed-point iteration.
+    """
+    edges = {frozenset((u, v)): d for u, v, d in G.edges(data=True)}
+    base = {k: (1 - d["loss"]) * (1 - (p.handoff_loss if d.get("handoff") else 0.0))
+            for k, d in edges.items()}
+    surv = dict(base)
+
+    def loads_for(surv: dict) -> dict:
+        load = dict.fromkeys(edges, 0.0)
+        for path, volume in assigned:
+            v = volume
+            for u, w in zip(path, path[1:]):
+                k = frozenset((u, w))
+                load[k] += v
+                v *= surv[k]
+        return load
+
+    for _ in range(ATTENUATION_ITERATIONS):
+        load = loads_for(surv)
+        for k, d in edges.items():
+            cong = min(1.0, d["capacity_gbps"] / load[k]) if load[k] > 0 else 1.0
+            surv[k] = 0.5 * surv[k] + 0.5 * base[k] * cong       # damped update
+
+    for k, load in loads_for(surv).items():
+        edges[k]["load_gbps"] = load
+
 
 def route_flows(G: nx.Graph, flows: list[Flow], p: TrafficParams,
-                load_scale: float = 1.0) -> list[FlowResult]:
+                load_scale: float = 1.0, prev_paths: dict | None = None) -> list[FlowResult]:
     """Greedy incremental assignment. Mutates edge loads in G."""
     load_aware = p.policy == "congestion_aware"
     chunk_paths: list[list[list[str]]] = [[] for _ in flows]
+    assigned: list[tuple[list[str], float]] = []                  # <-- new
+
+    prefer = []                                     # per flow: edges of its previous path
+    for f in flows:
+        prev = (prev_paths or {}).get((f.src, f.dst))
+        prefer.append({frozenset(e) for e in zip(prev, prev[1:])}
+                      if prev and p.route_stickiness > 0 else None)
 
     for _ in range(p.chunks):                       # rounds, so flows share fairly
         for i, f in enumerate(flows):
@@ -146,13 +194,15 @@ def route_flows(G: nx.Graph, flows: list[Flow], p: TrafficParams,
             if not load_aware and chunk_paths[i]:
                 path = chunk_paths[i][0]            # static policy: same path every chunk
             else:
-                path = _route(G, f.src, f.dst, chunk, p)
+                path = _route(G, f.src, f.dst, chunk, p, prefer[i])
             if path is None:
                 continue
             for u, v in zip(path, path[1:]):
-                G[u][v]["load_gbps"] += chunk
+                G[u][v]["load_gbps"] += chunk       # offered load drives routing decisions
             chunk_paths[i].append(path)
+            assigned.append((path, chunk))                        # <-- new
 
+    attenuate_loads(G, assigned, p)                               # <-- new
     finalize_links(G, p)
     return [_flow_result(G, f, chunk_paths[i], f.demand_gbps * load_scale)
             for i, f in enumerate(flows)]

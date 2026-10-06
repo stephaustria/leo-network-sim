@@ -71,3 +71,12 @@ def test_run_rejects_bad_policy_and_failures(env):
     client, _ = env
     assert client.post("/runs", json={"policy": "random"}).status_code == 422
     assert client.post("/runs", json={"failures": [{"kind": "satellite", "target": 99999}]}).status_code == 422
+
+def test_run_with_link_params(env):
+    client, _ = env
+    run_id = make_run(client, duration=60, link_params={"ground_capacity_gbps": 100})
+    links = client.get(f"/runs/{run_id}/links").json()["links"]
+    ground = [l for l in links if l["kind"] == "ground"]
+    assert ground and all(l["capacity_gbps"] > 10 for l in ground)
+
+    assert client.post("/runs", json={"link_params": {"bogus": 1}}).status_code == 422
