@@ -11,6 +11,7 @@ from app.api.topology import router as topology_router
 from app.api.ws import router as ws_router
 from app.db.models import Base
 from app.db.session import engine
+from app.api.experiments import router as experiments_router
 
 
 
@@ -33,6 +34,7 @@ app.include_router(topology_router)
 app.include_router(simulation_router)
 app.include_router(runs_router)
 app.include_router(ws_router)
+app.include_router(experiments_router)
 
 
 @app.get("/health")

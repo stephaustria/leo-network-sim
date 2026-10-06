@@ -45,6 +45,8 @@ class TickMetric(Base):
     outages: Mapped[int]
     links_added: Mapped[int]
     links_removed: Mapped[int]
+    route_changes: Mapped[int] = mapped_column(server_default="0")
+    mean_hops: Mapped[float | None]
 
 
 class HandoffRecord(Base):

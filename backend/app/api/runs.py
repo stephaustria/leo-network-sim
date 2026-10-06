@@ -1,14 +1,17 @@
-from typing import Callable
+from typing import Callable, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from app.api.links import model as link_model
 from app.db.models import (FlowSample, HandoffRecord, LinkSample, SimulationRun,
                            TickMetric)
 from app.db.persist import execute_run
 from app.db.session import get_db, get_session_factory
+from app.sim.failures import FailureSchedule
+from app.sim.links import validate_link_overrides
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -20,11 +23,18 @@ class RunRequest(BaseModel):
     duration: float = Field(1800.0, gt=0, le=7200)
     dt: float = Field(60.0, ge=10, le=600)
     load_scale: float = Field(1.0, ge=0, le=200)
+    policy: Literal["min_hop", "shortest_latency", "congestion_aware"] = "congestion_aware"
+    route_stickiness: float = Field(0.0, ge=0, le=0.5)
+    failures: list[dict] = Field(default_factory=list, max_length=50)
+    link_params: dict[str, float] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def check_tick_count(self):
+    def check_request(self):
         if self.duration // self.dt > MAX_TICKS:
             raise ValueError(f"too many ticks (max {MAX_TICKS}); raise dt or lower duration")
+        sched = FailureSchedule.from_dicts(self.failures, link_model.c, len(link_model.stations))
+        self.failures = sched.to_dicts()
+        self.link_params = validate_link_overrides(self.link_params)
         return self
 
 
@@ -108,11 +118,12 @@ def links(run_id: int, t: float | None = None, db: Session = Depends(get_db)):
                       .order_by(LinkSample.utilization.desc()))
     return {"run_id": run_id, "t": tick, "links": [to_dict(r, ("id", "run_id", "t")) for r in rows]}
 
+def purge_run(db: Session, run: SimulationRun) -> None:
+    for model in (LinkSample, FlowSample, HandoffRecord, TickMetric):
+        db.execute(delete(model).where(model.run_id == run.id))
+    db.delete(run)
 
 @router.delete("/{run_id}", status_code=204)
 def delete_run(run_id: int, db: Session = Depends(get_db)):
-    run = get_run_or_404(db, run_id)
-    for model in (LinkSample, FlowSample, HandoffRecord, TickMetric):
-        db.execute(delete(model).where(model.run_id == run_id))
-    db.delete(run)
+    purge_run(db, get_run_or_404(db, run_id))
     db.commit()

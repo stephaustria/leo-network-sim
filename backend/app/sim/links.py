@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -146,3 +146,30 @@ class LinkModel:
             capacity_gbps=p.ground_capacity_gbps * frac,
             loss=p.ground_base_loss + p.ground_fade_loss * (1 - sin_el) ** 2,
         )
+    
+# Link parameters an experiment is allowed to override, with (min, max) bounds.
+TUNABLE_LINK_PARAMS = {
+    "ground_capacity_gbps": (0.1, 10_000.0),
+    "isl_capacity_gbps": (0.1, 10_000.0),
+    "min_elevation_deg": (5.0, 60.0),
+}
+
+
+def validate_link_overrides(overrides: dict | None) -> dict:
+    out = {}
+    for key, value in (overrides or {}).items():
+        if key not in TUNABLE_LINK_PARAMS:
+            raise ValueError(f"link_params: unknown key {key!r}; allowed: {sorted(TUNABLE_LINK_PARAMS)}")
+        lo, hi = TUNABLE_LINK_PARAMS[key]
+        value = float(value)
+        if not lo <= value <= hi:
+            raise ValueError(f"link_params: {key} must be between {lo} and {hi}")
+        out[key] = value
+    return out
+
+
+def with_overrides(base: LinkModel, overrides: dict | None) -> LinkModel:
+    """A LinkModel sharing the constellation but with some link parameters changed."""
+    if not overrides:
+        return base
+    return LinkModel(base.c, base.stations, replace(base.params, **validate_link_overrides(overrides)))
