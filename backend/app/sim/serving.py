@@ -17,11 +17,12 @@ class HandoffEvent:
         return {"t": self.t, "station": self.station, "from_sat": self.from_sat,
                 "to_sat": self.to_sat, "reason": self.reason}
 
+DEFAULT_HYSTERESIS_DEG = 15.0
 
 class ServingTracker:
     """Keeps one serving satellite per station, with hysteresis to avoid flapping."""
 
-    def __init__(self, hysteresis_deg: float = 15.0):
+    def __init__(self, hysteresis_deg: float = DEFAULT_HYSTERESIS_DEG):
         self.hysteresis_deg = hysteresis_deg
         self.serving: dict[int, int | None] = {}
 
@@ -42,6 +43,8 @@ class ServingTracker:
             best_sat, best_el = int(sats[best]), float(elev[best])
 
             if cur is not None and np.any(sats == cur):
+                if best_sat == cur:
+                    continue                      # already on the best satellite
                 cur_el = float(elev[sats == cur][0])
                 if best_el - cur_el < self.hysteresis_deg:
                     continue                      # keep current satellite

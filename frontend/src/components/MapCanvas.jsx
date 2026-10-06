@@ -6,6 +6,7 @@ import { utilColor } from "../utils";
 
 const W = 1200;
 const H = 600;
+const RED = "#ff4d4d";
 const projection = geoEquirectangular().fitSize([W, H], { type: "Sphere" });
 const landFeature = feature(land, land.objects.land);
 
@@ -23,14 +24,24 @@ function addSegment(ctx, a, b) {
   }
 }
 
+const pairKey = (a, b) => (a < b ? `${a}-${b}` : `${b}-${a}`);
+
 function drawFrame(ctx, init, frame, selectedFlow) {
   const sats = frame.sats.map(([lat, lon]) => projection([lon, lat]));
   const stations = init.stations.map((s) => projection([s.lon, s.lat]));
   const nodePos = (id) => (id[0] === "S" ? sats[+id.slice(1)] : stations[+id.slice(1)]);
 
-  // 1. faint ISL mesh
+  const down = frame.failures ?? { sats: [], stations: [], isls: [] };
+  const downSats = new Set(down.sats);
+  const downStations = new Set(down.stations);
+  const downIsls = new Set(down.isls.map(([a, b]) => pairKey(a, b)));
+
+  // 1. faint ISL mesh (links touching failed satellites or failed links are hidden)
   ctx.beginPath();
-  for (const [a, b] of init.isl_pairs) addSegment(ctx, sats[a], sats[b]);
+  for (const [a, b] of init.isl_pairs) {
+    if (downSats.has(a) || downSats.has(b) || downIsls.has(pairKey(a, b))) continue;
+    addSegment(ctx, sats[a], sats[b]);
+  }
   ctx.strokeStyle = "rgba(120,160,220,0.10)";
   ctx.lineWidth = 0.6;
   ctx.stroke();
@@ -44,7 +55,18 @@ function drawFrame(ctx, init, frame, selectedFlow) {
     ctx.stroke();
   }
 
-  // 3. serving ground links
+  // 3. failed links
+  if (down.isls.length) {
+    ctx.beginPath();
+    for (const [a, b] of down.isls) addSegment(ctx, sats[a], sats[b]);
+    ctx.setLineDash([3, 3]);
+    ctx.strokeStyle = RED;
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // 4. serving ground links
   ctx.setLineDash([5, 3]);
   for (const g of frame.ground_links) {
     ctx.beginPath();
@@ -55,7 +77,7 @@ function drawFrame(ctx, init, frame, selectedFlow) {
   }
   ctx.setLineDash([]);
 
-  // 4. selected flow route
+  // 5. selected flow route
   const path = selectedFlow?.reachable ? selectedFlow.path : null;
   if (path && path.length > 1) {
     ctx.beginPath();
@@ -68,13 +90,13 @@ function drawFrame(ctx, init, frame, selectedFlow) {
     ctx.stroke();
   }
 
-  // 5. satellites
+  // 6. satellites
   const serving = new Set(frame.ground_links.map((g) => g.sat));
   const onPath = new Set((path ?? []).filter((id) => id[0] === "S").map((id) => +id.slice(1)));
 
   ctx.beginPath();
   sats.forEach((p, i) => {
-    if (serving.has(i) || onPath.has(i)) return;
+    if (serving.has(i) || onPath.has(i) || downSats.has(i)) return;
     ctx.moveTo(p[0] + 1.6, p[1]);
     ctx.arc(p[0], p[1], 1.6, 0, 2 * Math.PI);
   });
@@ -92,19 +114,34 @@ function drawFrame(ctx, init, frame, selectedFlow) {
     ctx.fill();
   }
 
-  // 6. ground stations
+  if (downSats.size) {                                   // failed satellites: red ×
+    ctx.beginPath();
+    downSats.forEach((i) => {
+      const [x, y] = sats[i];
+      ctx.moveTo(x - 3.5, y - 3.5);
+      ctx.lineTo(x + 3.5, y + 3.5);
+      ctx.moveTo(x + 3.5, y - 3.5);
+      ctx.lineTo(x - 3.5, y + 3.5);
+    });
+    ctx.strokeStyle = RED;
+    ctx.lineWidth = 1.8;
+    ctx.stroke();
+  }
+
+  // 7. ground stations
   ctx.font = "13px system-ui, sans-serif";
   init.stations.forEach((s, i) => {
     const p = stations[i];
+    const isDown = downStations.has(i);
     ctx.beginPath();
     ctx.arc(p[0], p[1], 5, 0, 2 * Math.PI);
-    ctx.fillStyle = "#ff6b6b";
+    ctx.fillStyle = isDown ? "#555" : "#ff6b6b";
     ctx.fill();
-    ctx.strokeStyle = "#fff";
-    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = isDown ? RED : "#fff";
+    ctx.lineWidth = isDown ? 2.5 : 1.5;
     ctx.stroke();
-    ctx.fillStyle = "#fff";
-    ctx.fillText(s.name, p[0] + 9, p[1] + 4);
+    ctx.fillStyle = isDown ? "#ff8a8a" : "#fff";
+    ctx.fillText(isDown ? `${s.name} (down)` : s.name, p[0] + 9, p[1] + 4);
   });
 }
 
@@ -147,6 +184,7 @@ export default function MapCanvas({ init, frame, selectedFlow }) {
         <span className="dot" style={{ background: "#ffd166" }} /> serving
         <span className="dot" style={{ background: "#ff6b6b" }} /> station
         <span className="dot" style={{ background: "#fff" }} /> selected route
+        <span className="dot" style={{ background: RED }} /> failed
         <span className="bar" /> link utilization 0 → 100%
       </div>
     </div>

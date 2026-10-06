@@ -127,7 +127,7 @@ export function ReplayControls({
           <option value="" disabled>Select a completed run</option>
           {completed.map((r) => (
             <option key={r.id} value={r.id}>
-              #{r.id} · load ×{r.params.load_scale} · {r.n_ticks} ticks
+              #{r.id} · {r.params.experiment ? r.params.experiment.arm.label : `load ×${r.params.load_scale}`} · {r.n_ticks} ticks
             </option>
           ))}
         </select>

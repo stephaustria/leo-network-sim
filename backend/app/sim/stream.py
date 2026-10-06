@@ -25,7 +25,8 @@ def links_from_graph(G) -> list[dict]:
     ]
 
 
-def build_frame(*, t, mode, sats, links, flows, handoffs, metrics, progress=None) -> dict:
+def build_frame(*, t, mode, sats, links, flows, handoffs, metrics, progress=None,
+                failures=None) -> dict:
     ground, loaded = [], []
     for l in links:
         if l["kind"] == "ground":
@@ -41,7 +42,8 @@ def build_frame(*, t, mode, sats, links, flows, handoffs, metrics, progress=None
                            "loss": _r(l["loss_eff"], 5)})
     return {"type": "frame", "t": t, "mode": mode, "progress": progress,
             "sats": sats, "ground_links": ground, "loaded_links": loaded,
-            "flows": flows, "handoffs": handoffs, "metrics": metrics}
+            "flows": flows, "handoffs": handoffs, "metrics": metrics,
+            "failures": failures or {"sats": [], "stations": [], "isls": []}}
 
 
 def live_frame(model, res, progress=None) -> dict:
@@ -50,6 +52,7 @@ def live_frame(model, res, progress=None) -> dict:
         links=links_from_graph(res.graph), flows=res.flows_detail(),
         handoffs=[e.to_dict() for e in res.handoffs], metrics=res.metrics,
         progress=progress,
+        failures=res.failures.to_dict() if res.failures else None,
     )
 
 

@@ -56,3 +56,33 @@ table.flows tr.sel td { background: #1b2c4d; }
 
 .events { max-height: 180px; overflow-y: auto; font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
 .ev.bad { color: #ff8a8a; }
+
+.chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.chip { font-size: 11px; padding: 1px 7px; border-radius: 9px; background: #2c3648; font-weight: normal; }
+.chip.completed { background: #1f6f4a; }
+.chip.running { background: #8a6a1f; }
+.chip.failed { background: #7a2430; }
+.metric-tabs button.active { background: #2f5dd1; border-color: #2f5dd1; }
+
+.exp-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.exp-table th { text-align: right; color: #7d8ba1; font-weight: normal; padding: 4px 6px; white-space: nowrap; }
+.exp-table td { text-align: right; padding: 5px 6px; border-top: 1px solid #1a2438; white-space: nowrap; }
+.exp-table th:first-child, .exp-table td:first-child { text-align: left; }
+.exp-table td.best { color: #6ee7a8; font-weight: 600; }
+.swatch { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+
+.arm-row { display: flex; gap: 6px; margin-bottom: 6px; }
+.arm-row select { flex: 1; min-width: 0; padding: 5px 4px; }
+
+.exp-list { display: flex; flex-direction: column; gap: 6px; }
+.exp-item { background: #131d31; border: 1px solid transparent; border-radius: 8px; padding: 8px 10px; cursor: pointer; }
+.exp-item.sel { border-color: #2f5dd1; }
+button.link { background: none; border: none; color: #7d8ba1; padding: 0; font-size: 11px; text-decoration: underline; }
+
+.warn { color: #ffb454; font-size: 12px; margin-top: 6px; }
+.failure-summary { font-size: 12px; margin-top: 8px; color: #ff8a8a; }
+
+input[type="number"], input[type="text"] {
+  background: #18233a; color: #e6edf7; border: 1px solid #2c4160; border-radius: 6px;
+  padding: 5px 8px; font-size: 13px; width: 100%; min-width: 0;
+}

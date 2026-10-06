@@ -49,3 +49,14 @@ def test_experiment_validation(env):
     assert client.post("/experiments", json=bad_failure).status_code == 422
     assert client.post("/experiments", json={"link_params": {"bogus": 1}}).status_code == 422
     assert client.post("/experiments", json={"duration": 7200, "dt": 10}).status_code == 422
+
+def test_arm_hysteresis_option(env):
+    client, _ = env
+    exp = make_experiment(client, preset="none", duration=120, arms=[
+        {"policy": "min_hop", "hysteresis_deg": 5},
+        {"policy": "min_hop", "hysteresis_deg": 40}])
+    detail = client.get(f"/experiments/{exp['experiment_id']}").json()
+    assert [a["label"] for a in detail["arms"]] == ["min_hop + hysteresis 5°", "min_hop + hysteresis 40°"]
+    assert [a["hysteresis_deg"] for a in detail["arms"]] == [5, 40]
+    run = client.get(f"/runs/{exp['runs'][0]}").json()
+    assert run["params"]["hysteresis_deg"] == 5

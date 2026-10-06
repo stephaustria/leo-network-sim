@@ -95,3 +95,58 @@ def test_replay_unknown_run(env):
         assert ws.receive_json()["type"] == "error"
         with pytest.raises(WebSocketDisconnect):
             ws.receive_json()
+
+def test_live_failure_injection(env):
+    client, _ = env
+    with client.websocket_connect("/ws/live") as ws:
+        ws.receive_json()     # init
+        ws.receive_json()     # initial state
+        ws.send_json({"cmd": "start", "dt": 60, "duration": 180, "speed": 20, "policy": "min_hop"})
+        sent, frames = False, []
+        while True:
+            m = ws.receive_json()
+            if m["type"] == "frame":
+                frames.append(m)
+                if not sent:
+                    ws.send_json({"cmd": "fail", "kind": "plane", "target": 3})
+                    sent = True
+            elif m["type"] == "done":
+                break
+    assert frames[0]["failures"]["sats"] == []
+    assert len(frames[-1]["failures"]["sats"]) == 22          # plane 3 down by the last tick
+
+
+def test_live_command_validation_and_settings(env):
+    client, _ = env
+    with client.websocket_connect("/ws/live") as ws:
+        ws.receive_json()
+        ws.receive_json()
+
+        ws.send_json({"cmd": "fail", "kind": "plane", "target": 1})       # not started yet
+        assert ws.receive_json()["type"] == "error"
+        ws.send_json({"cmd": "set", "policy": "random"})
+        assert ws.receive_json()["type"] == "error"
+
+        ws.send_json({"cmd": "set", "policy": "min_hop", "route_stickiness": 0.2,
+                      "hysteresis_deg": 5})
+        m = ws.receive_json()
+        assert (m["type"], m["policy"], m["route_stickiness"], m["hysteresis_deg"]) == \
+               ("state", "min_hop", 0.2, 5)
+
+        ws.send_json({"cmd": "start", "failures": [{"kind": "satellite", "target": 99999}]})
+        assert ws.receive_json()["type"] == "error"
+
+        ws.send_json({"cmd": "start", "dt": 60, "duration": 60, "speed": 20,
+                      "failures": [{"kind": "plane", "target": 2, "t_start": 0}]})
+        frames = collect_until_done(ws)
+        assert frames and all(len(f["failures"]["sats"]) == 22 for f in frames)
+
+
+def test_replay_frames_carry_failures(env):
+    client, _ = env
+    run_id = make_run(client, failures=[{"kind": "plane", "target": 3, "t_start": 60, "t_end": 120}])
+    with client.websocket_connect(f"/ws/replay/{run_id}") as ws:
+        ws.receive_json()
+        ws.send_json({"cmd": "speed", "speed": 60})
+        frames = collect_until_done(ws)
+    assert {f["t"]: len(f["failures"]["sats"]) for f in frames} == {0: 0, 60: 22, 120: 0, 180: 0}

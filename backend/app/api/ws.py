@@ -2,7 +2,7 @@ import asyncio
 import json
 import time
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Callable
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
@@ -10,10 +10,13 @@ from sqlalchemy import select
 
 from app.api.links import model as link_model
 from app.api.runs import to_dict
-from app.db.models import FlowSample, HandoffRecord, LinkSample, TickMetric
+from app.db.models import FlowSample, HandoffRecord, LinkSample, SimulationRun, TickMetric
 from app.db.session import get_session_factory
 from app.sim.engine import Simulation
-from app.sim.routing import default_flows
+from app.sim.failures import FailureSchedule
+from app.sim.presets import live_failure_events
+from app.sim.routing import POLICIES, TrafficParams, default_flows
+from app.sim.serving import DEFAULT_HYSTERESIS_DEG
 from app.sim.stream import build_frame, init_message, live_frame, sat_latlon
 
 router = APIRouter(tags=["websocket"])
@@ -65,6 +68,12 @@ async def shutdown(task: asyncio.Task) -> None:
 
 # ------------------------------------------------------------------ live
 
+def _policy(value) -> str:
+    if value not in POLICIES:
+        raise ValueError(f"policy must be one of {POLICIES}")
+    return value
+
+
 @dataclass
 class LiveState:
     started: bool = False
@@ -76,11 +85,18 @@ class LiveState:
     dt: float = 30.0
     speed: float = 1.0          # ticks per wall-clock second
     load_scale: float = 1.0
+    policy: str = "congestion_aware"
+    route_stickiness: float = 0.0
+    hysteresis_deg: float = DEFAULT_HYSTERESIS_DEG
+    start_failures: list = field(default_factory=list)
+    ops: list = field(default_factory=list)     # ("fail", [events]) / ("recover", None), in order
 
     def message(self) -> dict:
         return {"type": "state", "running": self.started and not self.paused,
                 "started": self.started, "paused": self.paused, "t": self.t,
-                "dt": self.dt, "speed": self.speed, "load_scale": self.load_scale}
+                "dt": self.dt, "speed": self.speed, "load_scale": self.load_scale,
+                "policy": self.policy, "route_stickiness": self.route_stickiness,
+                "hysteresis_deg": self.hysteresis_deg}
 
 
 class LiveCommands:
@@ -92,13 +108,21 @@ class LiveCommands:
 
     def __call__(self, msg: dict) -> str | None:
         s, cmd = self.state, msg.get("cmd")
+        n_stations = len(link_model.stations)
         try:
             if cmd == "start":
+                failures = msg.get("failures") or []
+                FailureSchedule.from_dicts(failures, link_model.c, n_stations)   # validate first
                 s.t_start = float(msg.get("t_start", 0.0))
                 s.dt = clamp(msg.get("dt", s.dt), 10, 600)
                 s.t_end = s.t_start + clamp(msg.get("duration", 7200), s.dt, 86400)
                 s.speed = clamp(msg.get("speed", s.speed), 0.1, 20)
                 s.load_scale = clamp(msg.get("load_scale", s.load_scale), 0, 200)
+                s.policy = _policy(msg.get("policy", s.policy))
+                s.route_stickiness = clamp(msg.get("route_stickiness", s.route_stickiness), 0, 0.5)
+                s.hysteresis_deg = clamp(msg.get("hysteresis_deg", s.hysteresis_deg), 0, 60)
+                s.start_failures = failures
+                s.ops.clear()
                 s.started, s.paused, s.reset = True, False, True
             elif cmd == "pause":
                 s.paused = True
@@ -113,9 +137,23 @@ class LiveCommands:
                     s.load_scale = clamp(msg["load_scale"], 0, 200)
                 if "dt" in msg:
                     s.dt = clamp(msg["dt"], 10, 600)
+                if "policy" in msg:
+                    s.policy = _policy(msg["policy"])
+                if "route_stickiness" in msg:
+                    s.route_stickiness = clamp(msg["route_stickiness"], 0, 0.5)
+                if "hysteresis_deg" in msg:
+                    s.hysteresis_deg = clamp(msg["hysteresis_deg"], 0, 60)
+            elif cmd in ("fail", "recover"):
+                if not s.started:
+                    return "start the simulation first"
+                if cmd == "fail":
+                    events = live_failure_events(msg, s.t, link_model.c, link_model.pairs, n_stations)
+                    s.ops.append(("fail", events))
+                else:
+                    s.ops.append(("recover", None))
             else:
                 return f"unknown cmd: {cmd!r}"
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, KeyError) as exc:
             return f"invalid value: {exc}"
         return None
 
@@ -137,11 +175,29 @@ async def ws_live(ws: WebSocket):
                 await asyncio.sleep(0.05)
                 continue
             if state.reset or sim is None:
-                sim = Simulation(link_model, load_scale=state.load_scale)
+                sim = Simulation(
+                    link_model, load_scale=state.load_scale, policy=state.policy,
+                    params=TrafficParams(route_stickiness=state.route_stickiness),
+                    hysteresis_deg=state.hysteresis_deg,
+                    schedule=FailureSchedule.from_dicts(
+                        state.start_failures, link_model.c, len(link_model.stations)),
+                )
                 state.t = state.t_start
                 state.reset = False
 
-            sim.load_scale = state.load_scale          # live traffic changes apply next tick
+            # live parameter changes and failure injections take effect from this tick on
+            sim.load_scale = state.load_scale
+            sim.params = replace(sim.params, policy=state.policy,
+                                 route_stickiness=state.route_stickiness)
+            sim.serving.hysteresis_deg = state.hysteresis_deg
+            while state.ops:
+                op, payload = state.ops.pop(0)
+                if op == "fail":
+                    for event in payload:
+                        sim.schedule.add(event)
+                else:
+                    sim.schedule.recover_all(state.t)
+
             began = time.monotonic()
             res = await asyncio.to_thread(sim.tick, state.t)
 
@@ -211,6 +267,9 @@ def load_tick_times(session_factory, run_id: int) -> list[float]:
 
 def load_replay_frame(session_factory, run_id: int, t: float, idx: int, n: int) -> dict:
     with session_factory() as db:
+        run = db.get(SimulationRun, run_id)
+        schedule = FailureSchedule.from_dicts(
+            run.params.get("failures"), link_model.c, len(link_model.stations))
         metrics = db.scalars(select(TickMetric).where(
             TickMetric.run_id == run_id, TickMetric.t == t)).one()
         flows = db.scalars(select(FlowSample).where(
@@ -225,6 +284,7 @@ def load_replay_frame(session_factory, run_id: int, t: float, idx: int, n: int) 
             flows=[to_dict(f, ("id", "run_id", "t")) for f in flows],
             handoffs=[to_dict(h, ("id", "run_id")) for h in handoffs],
             metrics=to_dict(metrics), progress={"tick": idx, "of": n},
+            failures=schedule.active_at(t, link_model.c).to_dict(),
         )
 
 

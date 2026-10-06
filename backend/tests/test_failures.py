@@ -5,6 +5,7 @@ from app.sim.engine import Simulation
 from app.sim.failures import FailureEvent, FailureSchedule, apply_failures
 from app.sim.graph import gs_node
 from app.sim.links import LinkModel
+from app.sim.presets import live_failure_events, seam_cut
 from app.sim.routing import Flow
 
 C = Constellation()
@@ -121,6 +122,29 @@ def test_serving_satellite_failure_triggers_handoff():
 def test_recover_all_closes_open_events():
     s = sched({"kind": "satellite", "target": 2, "t_start": 0})
     assert 2 in s.active_at(500, C).sats
+    s.recover_all(500)
+    assert 2 not in s.active_at(500, C).sats
+    assert 2 in s.active_at(499, C).sats
+
+def test_live_failure_events():
+    ev = live_failure_events({"kind": "plane", "target": 3, "duration": 300},
+                             120.0, C, MODEL.pairs, N_STATIONS)
+    assert len(ev) == 1 and ev[0].t_start == 120.0 and ev[0].t_end == 420.0
+
+    seam = live_failure_events({"kind": "seam", "target": 5}, 0.0, C, MODEL.pairs, N_STATIONS)
+    assert len(seam) == C.per_plane
+    assert all(e.kind == "isl" and e.t_end is None for e in seam)
+
+    assert len(seam_cut(C, MODEL.pairs, C.n_planes - 1, 0.0)) == C.per_plane   # wrap-around
+
+    for bad in ({"kind": "bogus", "target": 1}, {"kind": "satellite", "target": 9999},
+                {"kind": "satellite"}, {"kind": "plane", "target": 1, "duration": -5}):
+        with pytest.raises(ValueError):
+            live_failure_events(bad, 0.0, C, MODEL.pairs, N_STATIONS)
+
+
+def test_recover_all_also_cuts_short_scheduled_events():
+    s = sched({"kind": "satellite", "target": 2, "t_start": 0, "t_end": 1000})
     s.recover_all(500)
     assert 2 not in s.active_at(500, C).sats
     assert 2 in s.active_at(499, C).sats

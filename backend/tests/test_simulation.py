@@ -75,3 +75,17 @@ def test_hysteresis_keeps_satellite():
     before = dict(tr.serving)
     events = tr.update(0, snap0, len(MODEL.stations))   # same snapshot again
     assert events == [] and tr.serving == before
+
+def test_zero_hysteresis_never_hands_off_to_same_satellite():
+    tr = ServingTracker(hysteresis_deg=0.0)
+    snap = MODEL.snapshot(0).ground
+    tr.update(0, snap, len(MODEL.stations))
+    assert tr.update(0, snap, len(MODEL.stations)) == []
+
+
+def test_lower_hysteresis_means_more_handoffs():
+    def total(h):
+        sim = Simulation(MODEL, flows=[], hysteresis_deg=h)      # no traffic: faster
+        return sum(sim.tick(t).metrics["handoffs"] for t in range(0, 1200, 60))
+
+    assert total(0.0) > total(40.0)
