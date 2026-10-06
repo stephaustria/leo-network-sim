@@ -16,6 +16,9 @@ A simulator for a LEO satellite constellation **acting as a communications netwo
 - **Persistence:** runs, per-tick metrics, flows, links and handoffs stored in PostgreSQL
 - **Live streaming and replay:** WebSockets stream frames in real time, or replay any stored run with seek and speed controls
 - **Dashboard:** React + canvas world map, metrics, charts, per-flow route highlighting, and a traffic-load slider that changes congestion while the simulation runs
+- **Failure injection:** fail satellites, whole orbital planes, ground stations or inter-satellite links, live or on a schedule, and watch rerouting and recovery
+- **Routing policies:** min-hop, shortest-latency, and congestion-aware, plus optional route stickiness (damps route flapping) and configurable handoff hysteresis
+- **Experiments:** run several policy arms on identical conditions (failure presets, load, link capacities) and compare goodput, latency, route stability, handoffs and recovery time in charts and a summary table
 
 ## Architecture
 
@@ -85,6 +88,8 @@ cd backend && pytest
 | `POST /runs`, `GET /runs/{id}/timeline`, `/flows`, `/links`, `/handoffs` | Persisted runs (executed in the background) |
 | `WS /ws/live` | Live simulation stream with start, pause, resume, speed, and load controls |
 | `WS /ws/replay/{run_id}` | Replay of a stored run with seek and speed controls |
+| `POST /experiments`, `GET /experiments/{id}`, `GET /experiments/{id}/timelines` | Policy-comparison experiments: one scenario, several arms, aggregated stats and aligned time series |
+| `WS /ws/live` commands `fail`, `recover`, `set` | Inject or recover failures and change policy, stickiness, hysteresis or load while the simulation runs |
 
 ## Model assumptions
 
@@ -94,6 +99,10 @@ cd backend && pytest
 - Links are undirected: both directions share one capacity and one load counter
 - Traffic above capacity is dropped (`1 - capacity/load`); a short loss burst is added on freshly handed-off links
 - Ground stations never act as transit nodes
+- Link loads are *carried* loads: traffic dropped at one link no longer loads downstream links (solved as a damped fixed point)
+- `route_changes` counts mid-path route changes only; path changes caused by a ground handoff are tracked separately through the `handoffs` metric
+- Each handoff adds a 2% loss burst on the new ground link for one tick, so handoff hysteresis directly affects goodput. Conclusions about the best hysteresis depend on that assumption
+- Goodput is delivered / offered traffic, counting unreachable flows as lost
 
 ## Project structure
 
