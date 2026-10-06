@@ -1,23 +1,32 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { API_URL } from "./config";
 import Charts from "./components/Charts";
 import { LiveControls, ReplayControls } from "./components/Controls";
 import EventLog from "./components/EventLog";
+import ExperimentForm from "./components/ExperimentForm";
+import ExperimentList from "./components/ExperimentList";
+import ExperimentResults from "./components/ExperimentResults";
 import FlowTable from "./components/FlowTable";
+import { FailurePanel, PolicyControls } from "./components/LiveExtras";
 import MapCanvas from "./components/MapCanvas";
 import MetricsPanel from "./components/MetricsPanel";
+import { useExperiments } from "./hooks/useExperiments";
 import { useRuns } from "./hooks/useRuns";
 import { useSimStream } from "./hooks/useSimStream";
 import "./App.css";
 
+const MODES = [["live", "Live"], ["replay", "Replay"], ["experiments", "Experiments"]];
+
 export default function App() {
   const { status, init, frame, serverState, history, error, finished, open, close, send } = useSimStream();
   const { runs, create } = useRuns();
+  const exp = useExperiments();
 
   const [mode, setMode] = useState("live");
   const [selected, setSelected] = useState(null);
   const [runId, setRunId] = useState(null);
   const [loadedRun, setLoadedRun] = useState(null);
+  const [pendingReplay, setPendingReplay] = useState(null);
   const [timeline, setTimeline] = useState([]);
   const [creating, setCreating] = useState(false);
   const [events, setEvents] = useState([]);
@@ -46,17 +55,31 @@ export default function App() {
     setEvents((prev) => [...fresh, ...(reset ? [] : prev)].slice(0, 40));
   }, [frame]);
 
-  const loadReplay = async () => {
-    if (!runId) return;
+  const loadReplay = useCallback(async (id) => {
+    if (!id) return;
     setSelected(null);
-    setLoadedRun(runId);
+    setLoadedRun(id);
     try {
-      const r = await fetch(`${API_URL}/runs/${runId}/timeline`);
+      const r = await fetch(`${API_URL}/runs/${id}/timeline`);
       setTimeline(r.ok ? await r.json() : []);
     } catch {
       setTimeline([]);
     }
-    open(`/ws/replay/${runId}`);
+    open(`/ws/replay/${id}`);
+  }, [open]);
+
+  // "Replay" button in the experiment table: switch tabs, then load that run
+  useEffect(() => {
+    if (mode === "replay" && pendingReplay != null) {
+      loadReplay(pendingReplay);
+      setPendingReplay(null);
+    }
+  }, [mode, pendingReplay, loadReplay]);
+
+  const replayRun = (id) => {
+    setRunId(id);
+    setPendingReplay(id);
+    setMode("replay");
   };
 
   const createRun = async (loadScale) => {
@@ -80,44 +103,62 @@ export default function App() {
       <header>
         <h1>LEO Network Simulator</h1>
         <div className="tabs">
-          {["live", "replay"].map((m) => (
-            <button key={m} className={mode === m ? "active" : ""} onClick={() => { setMode(m); setSelected(null); }}>
-              {m === "live" ? "Live" : "Replay"}
+          {MODES.map(([m, label]) => (
+            <button key={m} className={mode === m ? "active" : ""}
+                    onClick={() => { setMode(m); setSelected(null); }}>
+              {label}
             </button>
           ))}
         </div>
-        <span className={`badge ${status}`}>{status}</span>
-        {init && (
+        {mode !== "experiments" && <span className={`badge ${status}`}>{status}</span>}
+        {mode !== "experiments" && init && (
           <span className="dim">
             {init.constellation.n_sats} sats · {init.constellation.altitude_km} km · {init.constellation.inclination_deg}°
           </span>
         )}
       </header>
 
-      {error && <div className="error">{error}</div>}
+      {error && mode !== "experiments" && <div className="error">{error}</div>}
 
-      <main>
-        <section className="left">
-          <MapCanvas init={init} frame={frame} selectedFlow={selectedFlow} />
-          <Charts data={chartData} cursorT={frame?.t} />
-        </section>
+      {mode === "experiments" ? (
+        <main>
+          <section className="left">
+            <ExperimentResults detail={exp.detail} timelines={exp.timelines} onReplay={replayRun} />
+          </section>
+          <aside className="right">
+            <ExperimentForm onSubmit={exp.create} />
+            <ExperimentList list={exp.list} selectedId={exp.selectedId}
+                            onSelect={exp.select} onDelete={exp.remove} />
+          </aside>
+        </main>
+      ) : (
+        <main>
+          <section className="left">
+            <MapCanvas init={init} frame={frame} selectedFlow={selectedFlow} />
+            <Charts data={chartData} cursorT={frame?.t} />
+          </section>
 
-        <aside className="right">
-          {mode === "live" ? (
-            <LiveControls send={send} serverState={serverState} finished={finished} />
-          ) : (
-            <ReplayControls
-              runs={runs} runId={runId} setRunId={setRunId} onLoad={loadReplay}
-              onCreate={createRun} creating={creating} send={send}
-              serverState={serverState} frame={frame} timeline={timeline}
-              loaded={loadedRun != null && status === "open"}
-            />
-          )}
-          <MetricsPanel frame={frame} />
-          <FlowTable init={init} flows={flows} selected={selected} onSelect={setSelected} />
-          <EventLog init={init} events={events} />
-        </aside>
-      </main>
+          <aside className="right">
+            {mode === "live" ? (
+              <>
+                <LiveControls send={send} serverState={serverState} finished={finished} />
+                <PolicyControls send={send} serverState={serverState} />
+                <FailurePanel init={init} frame={frame} send={send} started={!!serverState?.started} />
+              </>
+            ) : (
+              <ReplayControls
+                runs={runs} runId={runId} setRunId={setRunId} onLoad={() => loadReplay(runId)}
+                onCreate={createRun} creating={creating} send={send}
+                serverState={serverState} frame={frame} timeline={timeline}
+                loaded={loadedRun != null && status === "open"}
+              />
+            )}
+            <MetricsPanel frame={frame} />
+            <FlowTable init={init} flows={flows} selected={selected} onSelect={setSelected} />
+            <EventLog init={init} events={events} />
+          </aside>
+        </main>
+      )}
     </div>
   );
 }
