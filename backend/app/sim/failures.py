@@ -88,9 +88,9 @@ class FailureSchedule:
         self.events.append(event)
 
     def recover_all(self, t: float) -> None:
-        """End every open-ended failure that is active at time t."""
+        """End every failure that is active at time t (even ones with a later t_end)."""
         for e in self.events:
-            if e.active(t) and e.t_end is None:
+            if e.active(t):
                 e.t_end = t
 
     def active_at(self, t: float, c) -> FailureState:

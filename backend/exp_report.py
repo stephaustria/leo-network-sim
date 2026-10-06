@@ -10,7 +10,7 @@ print(d["name"], "|", d["status"], "| failure window:", d["failure_window"])
 cols = [("mean_goodput", "goodput"), ("traffic_lost_gbit", "lost Gbit"),
         ("mean_latency_ms", "lat ms"), ("p95_latency_ms", "p95 ms"),
         ("mean_hops", "hops"), ("route_changes_per_tick", "chg/tick"),
-        ("mean_overloaded_links", "overload")]
+        ("handoffs_total", "handoffs"), ("mean_overloaded_links", "overload")]
 print(f"{'arm':36}" + "".join(f"{h:>11}" for _, h in cols) + f"{'recovery s':>12}")
 for a in d["arms"]:
     s = a.get("summary")

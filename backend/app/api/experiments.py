@@ -15,6 +15,7 @@ from app.db.session import get_db, get_session_factory
 from app.sim.analysis import failure_window, summarize_arm, tick_goodput
 from app.sim.presets import preset_failures
 from app.sim.routing import POLICIES
+from app.sim.serving import DEFAULT_HYSTERESIS_DEG
 
 router = APIRouter(prefix="/experiments", tags=["experiments"])
 
@@ -26,6 +27,7 @@ DEFAULT_METRICS = "goodput,mean_latency_ms,mean_hops,route_changes,overloaded_li
 class Arm(BaseModel):
     policy: Literal["min_hop", "shortest_latency", "congestion_aware"]
     route_stickiness: float = Field(0.0, ge=0, le=0.5)
+    hysteresis_deg: float | None = Field(None, ge=0, le=60)      # None = default (15)
     label: str | None = Field(None, max_length=60)
 
 
@@ -51,7 +53,12 @@ class ExperimentRequest(BaseModel):
 def arm_label(a: Arm) -> str:
     if a.label:
         return a.label
-    return a.policy + (f" + stickiness {a.route_stickiness:g}" if a.route_stickiness > 0 else "")
+    extras = []
+    if a.route_stickiness > 0:
+        extras.append(f"stickiness {a.route_stickiness:g}")
+    if a.hysteresis_deg is not None and a.hysteresis_deg != DEFAULT_HYSTERESIS_DEG:
+        extras.append(f"hysteresis {a.hysteresis_deg:g}°")
+    return a.policy + (" + " + ", ".join(extras) if extras else "")
 
 
 def experiment_runs(db: Session, exp_id: str) -> list[SimulationRun]:
@@ -88,12 +95,14 @@ def create_experiment(req: ExperimentRequest, background: BackgroundTasks,
             run_req = RunRequest(
                 t_start=req.t_start, duration=req.duration, dt=req.dt, load_scale=req.load_scale,
                 policy=arm.policy, route_stickiness=arm.route_stickiness,
+                hysteresis_deg=(arm.hysteresis_deg if arm.hysteresis_deg is not None
+                                else DEFAULT_HYSTERESIS_DEG),
                 failures=failures, link_params=req.link_params)
             params = run_req.model_dump()
             params["experiment"] = {
                 "id": exp_id, "name": req.name, "preset": req.preset, "arm_index": i,
                 "arm": {"policy": arm.policy, "route_stickiness": arm.route_stickiness,
-                        "label": arm_label(arm)},
+                        "hysteresis_deg": run_req.hysteresis_deg, "label": arm_label(arm)},
             }
             run = SimulationRun(params=params, status="running")
             db.add(run)
@@ -137,8 +146,9 @@ def get_experiment(exp_id: str, db: Session = Depends(get_db)):
     for r in runs:
         arm = r.params["experiment"]["arm"]
         entry = {"run_id": r.id, "label": arm["label"], "policy": arm["policy"],
-                 "route_stickiness": arm["route_stickiness"], "status": r.status,
-                 "n_ticks": r.n_ticks}
+                 "route_stickiness": arm["route_stickiness"],
+                 "hysteresis_deg": arm.get("hysteresis_deg", DEFAULT_HYSTERESIS_DEG),
+                 "status": r.status, "n_ticks": r.n_ticks}
         if r.status == "completed":
             entry["summary"] = summarize_arm(run_ticks(db, r.id), r.params)
         arms.append(entry)
@@ -149,6 +159,7 @@ def get_experiment(exp_id: str, db: Session = Depends(get_db)):
                                          "failures", "link_params")},
         "failure_window": failure_window(first.get("failures")),
         "arms": arms,
+
     }
 
 

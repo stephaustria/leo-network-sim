@@ -9,6 +9,7 @@ from app.db.models import (FlowSample, HandoffRecord, LinkSample, SimulationRun,
 from app.db.session import SessionLocal
 from app.sim.engine import Simulation, StepResult
 from app.sim.failures import FailureSchedule
+from app.sim.serving import DEFAULT_HYSTERESIS_DEG
 from app.sim.stream import links_from_graph
 from app.sim.links import with_overrides
 from app.sim.routing import TrafficParams
@@ -40,6 +41,7 @@ def execute_run(run_id: int, session_factory=SessionLocal) -> None:
             params=TrafficParams(route_stickiness=p.get("route_stickiness", 0.0)),
             policy=p.get("policy", "congestion_aware"),
             schedule=FailureSchedule.from_dicts(p.get("failures"), lm.c, len(lm.stations)),
+            hysteresis_deg=p.get("hysteresis_deg", DEFAULT_HYSTERESIS_DEG),
         )
 
         for k in range(steps + 1):

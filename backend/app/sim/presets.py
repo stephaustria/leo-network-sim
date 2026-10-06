@@ -1,3 +1,5 @@
+from .failures import KINDS, FailureSchedule
+
 PRESETS = ("none", "plane_outage", "adjacent_planes", "station_loss", "plane_seam_cut")
 
 
@@ -26,7 +28,31 @@ def preset_failures(preset: str, t_start: float, duration: float, dt: float, c, 
         return [{"kind": "station", "target": 0, **window}]
     if preset == "plane_seam_cut":
         # remove every cross-plane link between two adjacent planes; no satellites are lost
-        return [{"kind": "isl", "target": [int(a), int(b)], **window}
-                for a, b in pairs
-                if {int(c.plane[a]), int(c.plane[b])} == {p, p + 1}]
+        return seam_cut(c, pairs, p, t0, t1)
     raise ValueError(f"unknown preset {preset!r}; choose from {PRESETS}")
+
+def seam_cut(c, pairs, p: int, t_start: float, t_end: float | None = None) -> list[dict]:
+    """ISL failure events for every cross-plane link between plane p and plane p+1."""
+    planes = {p % c.n_planes, (p + 1) % c.n_planes}
+    return [{"kind": "isl", "target": [int(a), int(b)], "t_start": t_start, "t_end": t_end}
+            for a, b in pairs
+            if {int(c.plane[a]), int(c.plane[b])} == planes]
+
+
+def live_failure_events(msg: dict, t: float, c, pairs, n_stations: int):
+    """Validated FailureEvent objects for a live 'fail' command starting at time t."""
+    kind = msg.get("kind")
+    duration = msg.get("duration")
+    t_end = None if duration in (None, 0) else t + float(duration)
+    if t_end is not None and t_end <= t:
+        raise ValueError("duration must be positive")
+
+    if kind == "seam":
+        events = seam_cut(c, pairs, int(msg["target"]), t, t_end)
+        if not events:
+            raise ValueError("no cross-plane links found for that plane")
+    elif kind in KINDS:
+        events = [{"kind": kind, "target": msg.get("target"), "t_start": t, "t_end": t_end}]
+    else:
+        raise ValueError(f"kind must be one of {KINDS + ('seam',)}, got {kind!r}")
+    return FailureSchedule.from_dicts(events, c, n_stations).events

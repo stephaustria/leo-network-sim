@@ -25,6 +25,7 @@ class RunRequest(BaseModel):
     load_scale: float = Field(1.0, ge=0, le=200)
     policy: Literal["min_hop", "shortest_latency", "congestion_aware"] = "congestion_aware"
     route_stickiness: float = Field(0.0, ge=0, le=0.5)
+    hysteresis_deg: float = Field(15.0, ge=0, le=60)
     failures: list[dict] = Field(default_factory=list, max_length=50)
     link_params: dict[str, float] = Field(default_factory=dict)
 
