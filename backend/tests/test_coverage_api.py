@@ -26,3 +26,17 @@ def test_coverage_validation(env):
     assert client.get("/coverage?res_deg=7").status_code == 422                       # does not tile
     assert client.get("/coverage?res_deg=1&window_hours=48&step_s=30").status_code == 422   # too heavy
     assert client.get("/coverage?scenario_id=999").status_code == 404
+
+def test_coverage_preview_for_an_unsaved_config(env):
+    client, _ = env
+    body = {"config": {"constellation": {"planes": 6, "sats_per_plane": 8}},
+            "res_deg": 15, "window_hours": 2, "step_s": 300}
+    r = client.post("/coverage/preview", json=body)
+    assert r.status_code == 200, r.text
+    assert r.json()["params"]["n_sats"] == 48
+
+    assert client.post("/coverage/preview",
+                       json={"config": {"constellation": {"planes": 2}}}).status_code == 422
+    assert client.post("/coverage/preview", json={"res_deg": 7}).status_code == 422
+    heavy = {"res_deg": 1, "window_hours": 48, "step_s": 30}
+    assert client.post("/coverage/preview", json=heavy).status_code == 422

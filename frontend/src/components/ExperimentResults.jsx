@@ -74,6 +74,7 @@ export default function ExperimentResults({ detail, timelines, onReplay }) {
           {detail.name} <span className={`chip ${detail.status}`}>{detail.status}</span>
         </h3>
         <div className="dim">
+          {detail.scenario ? `${detail.scenario.name} · ` : ""}load ×{detail.params.load_scale} · {Math.round(detail.params.duration / 60)} min · tick {detail.params.dt} s ·
           load ×{detail.params.load_scale} · {Math.round(detail.params.duration / 60)} min · tick {detail.params.dt} s ·
           feeders {detail.params.link_params?.ground_capacity_gbps ?? 2} Gbps ·{" "}
           {fw ? `failure ${fmtTime(fw.start)} → ${fw.end != null ? fmtTime(fw.end) : "never recovers"}` : "no failure"}

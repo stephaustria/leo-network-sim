@@ -25,7 +25,7 @@ const ARM_PRESETS = {
   "Hysteresis sweep": () => [0, 5, 15, 30, 45].map((h) => ["min_hop", 0, h]),
 };
 
-export default function ExperimentForm({ onSubmit }) {
+export default function ExperimentForm({ onSubmit, scenarioId, scenarioName }) {
   const counter = useRef(0);
   const makeArm = ([policy, stickiness, hysteresis]) => ({ id: counter.current++, policy, stickiness, hysteresis });
 
@@ -54,6 +54,7 @@ export default function ExperimentForm({ onSubmit }) {
         name, preset, load_scale: load, duration: minutes * 60, dt,
         link_params: feeder === "high" ? { ground_capacity_gbps: 100 } : {},
         arms: arms.map((a) => ({ policy: a.policy, route_stickiness: a.stickiness, hysteresis_deg: a.hysteresis })),
+        ...(scenarioId != null ? { scenario_id: scenarioId } : {}),
       });
     } catch (e) {
       setError(e.message);
@@ -65,6 +66,7 @@ export default function ExperimentForm({ onSubmit }) {
   return (
     <div className="panel">
       <h3>New experiment</h3>
+        <div className="hint">Scenario: {scenarioName}</div>
       <label>
         Name
         <input type="text" value={name} maxLength={80} onChange={(e) => setName(e.target.value)} />
