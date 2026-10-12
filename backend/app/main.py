@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.constellation import router as constellation_router
+from app.api.coverage import router as coverage_router
 from app.api.experiments import router as experiments_router
 from app.api.links import router as links_router
 from app.api.runs import router as runs_router
@@ -18,6 +19,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(constellation_router)
+app.include_router(coverage_router)
 app.include_router(links_router)
 app.include_router(topology_router)
 app.include_router(simulation_router)
