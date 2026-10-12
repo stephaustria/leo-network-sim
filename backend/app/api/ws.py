@@ -5,19 +5,20 @@ from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from typing import Callable
 
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 
-from app.api.links import model as link_model
+from app.api.deps import scenario_snapshot
 from app.api.runs import to_dict
 from app.db.models import FlowSample, HandoffRecord, LinkSample, SimulationRun, TickMetric
 from app.db.session import get_session_factory
 from app.sim.engine import Simulation
 from app.sim.failures import FailureSchedule
 from app.sim.presets import live_failure_events
-from app.sim.routing import POLICIES, TrafficParams, default_flows
+from app.sim.routing import POLICIES, TrafficParams
 from app.sim.serving import DEFAULT_HYSTERESIS_DEG
 from app.sim.stream import build_frame, init_message, live_frame, sat_latlon
+from app.sim.worlds import World, world_for_params
 
 router = APIRouter(tags=["websocket"])
 
@@ -66,6 +67,13 @@ async def shutdown(task: asyncio.Task) -> None:
         await task
 
 
+def open_world(session_factory, scenario_id: int | None) -> tuple[World, dict]:
+    """Resolve a scenario (None = default) into a world. Raises HTTPException(404) if missing."""
+    with session_factory() as db:
+        snapshot = scenario_snapshot(db, scenario_id)
+    return world_for_params({"scenario": snapshot}), snapshot
+
+
 # ------------------------------------------------------------------ live
 
 def _policy(value) -> str:
@@ -100,19 +108,20 @@ class LiveState:
 
 
 class LiveCommands:
-    def __init__(self, state: LiveState):
+    def __init__(self, state: LiveState, model):
         self.state = state
+        self.model = model
 
     def state_msg(self) -> dict:
         return self.state.message()
 
     def __call__(self, msg: dict) -> str | None:
-        s, cmd = self.state, msg.get("cmd")
-        n_stations = len(link_model.stations)
+        s, cmd, model = self.state, msg.get("cmd"), self.model
+        n_stations = len(model.stations)
         try:
             if cmd == "start":
                 failures = msg.get("failures") or []
-                FailureSchedule.from_dicts(failures, link_model.c, n_stations)   # validate first
+                FailureSchedule.from_dicts(failures, model.c, n_stations)       # validate first
                 s.t_start = float(msg.get("t_start", 0.0))
                 s.dt = clamp(msg.get("dt", s.dt), 10, 600)
                 s.t_end = s.t_start + clamp(msg.get("duration", 7200), s.dt, 86400)
@@ -147,7 +156,7 @@ class LiveCommands:
                 if not s.started:
                     return "start the simulation first"
                 if cmd == "fail":
-                    events = live_failure_events(msg, s.t, link_model.c, link_model.pairs, n_stations)
+                    events = live_failure_events(msg, s.t, model.c, model.pairs, n_stations)
                     s.ops.append(("fail", events))
                 else:
                     s.ops.append(("recover", None))
@@ -159,15 +168,24 @@ class LiveCommands:
 
 
 @router.websocket("/ws/live")
-async def ws_live(ws: WebSocket):
+async def ws_live(ws: WebSocket, scenario_id: int | None = None,
+                  session_factory: Callable = Depends(get_session_factory)):
     await ws.accept()
     ch = Channel(ws)
+    try:
+        world, snapshot = await asyncio.to_thread(open_world, session_factory, scenario_id)
+    except HTTPException as exc:
+        await ch.send({"type": "error", "message": exc.detail})
+        await ws.close(code=4404)
+        return
+
+    model = world.model
     state = LiveState()
     sim: Simulation | None = None
 
-    await ch.send(init_message(link_model, default_flows(len(link_model.stations))))
+    await ch.send(init_message(model, world.flows(), snapshot))
     await ch.send(state.message())
-    reader = asyncio.create_task(ch.read_commands(LiveCommands(state)))
+    reader = asyncio.create_task(ch.read_commands(LiveCommands(state, model)))
 
     try:
         while not reader.done():
@@ -176,11 +194,11 @@ async def ws_live(ws: WebSocket):
                 continue
             if state.reset or sim is None:
                 sim = Simulation(
-                    link_model, load_scale=state.load_scale, policy=state.policy,
+                    model, flows=world.flows(), load_scale=state.load_scale, policy=state.policy,
                     params=TrafficParams(route_stickiness=state.route_stickiness),
                     hysteresis_deg=state.hysteresis_deg,
                     schedule=FailureSchedule.from_dicts(
-                        state.start_failures, link_model.c, len(link_model.stations)),
+                        state.start_failures, model.c, len(model.stations)),
                 )
                 state.t = state.t_start
                 state.reset = False
@@ -203,7 +221,7 @@ async def ws_live(ws: WebSocket):
 
             progress = {"tick": int((state.t - state.t_start) // state.dt),
                         "of": int((state.t_end - state.t_start) // state.dt) + 1}
-            await ch.send(live_frame(link_model, res, progress))
+            await ch.send(live_frame(model, res, progress))
 
             state.t += state.dt
             if state.t > state.t_end:
@@ -259,17 +277,20 @@ class ReplayCommands:
         return None
 
 
-def load_tick_times(session_factory, run_id: int) -> list[float]:
-    with session_factory() as db:
-        return list(db.scalars(
-            select(TickMetric.t).where(TickMetric.run_id == run_id).order_by(TickMetric.t)))
-
-
-def load_replay_frame(session_factory, run_id: int, t: float, idx: int, n: int) -> dict:
+def load_run_for_replay(session_factory, run_id: int):
+    """(run params, tick times) or None if the run is missing or has no ticks yet."""
     with session_factory() as db:
         run = db.get(SimulationRun, run_id)
-        schedule = FailureSchedule.from_dicts(
-            run.params.get("failures"), link_model.c, len(link_model.stations))
+        if run is None:
+            return None
+        times = list(db.scalars(
+            select(TickMetric.t).where(TickMetric.run_id == run_id).order_by(TickMetric.t)))
+        return (run.params, times) if times else None
+
+
+def load_replay_frame(session_factory, run_id: int, t: float, idx: int, n: int,
+                      model, schedule: FailureSchedule) -> dict:
+    with session_factory() as db:
         metrics = db.scalars(select(TickMetric).where(
             TickMetric.run_id == run_id, TickMetric.t == t)).one()
         flows = db.scalars(select(FlowSample).where(
@@ -279,12 +300,12 @@ def load_replay_frame(session_factory, run_id: int, t: float, idx: int, n: int) 
         handoffs = db.scalars(select(HandoffRecord).where(
             HandoffRecord.run_id == run_id, HandoffRecord.t == t))
         return build_frame(
-            t=t, mode="replay", sats=sat_latlon(link_model.c, t),
+            t=t, mode="replay", sats=sat_latlon(model.c, t),
             links=[to_dict(l, ("id", "run_id", "t")) for l in links],
             flows=[to_dict(f, ("id", "run_id", "t")) for f in flows],
             handoffs=[to_dict(h, ("id", "run_id")) for h in handoffs],
             metrics=to_dict(metrics), progress={"tick": idx, "of": n},
-            failures=schedule.active_at(t, link_model.c).to_dict(),
+            failures=schedule.active_at(t, model.c).to_dict(),
         )
 
 
@@ -294,14 +315,19 @@ async def ws_replay(ws: WebSocket, run_id: int,
     await ws.accept()
     ch = Channel(ws)
 
-    times = await asyncio.to_thread(load_tick_times, session_factory, run_id)
-    if not times:
+    loaded = await asyncio.to_thread(load_run_for_replay, session_factory, run_id)
+    if loaded is None:
         await ch.send({"type": "error", "message": "run not found or has no ticks yet"})
         await ws.close(code=4404)
         return
 
+    params, times = loaded
+    world = world_for_params(params)               # the scenario this run was created with
+    model = world.model
+    schedule = FailureSchedule.from_dicts(params.get("failures"), model.c, len(model.stations))
+
     state = ReplayState()
-    await ch.send(init_message(link_model, default_flows(len(link_model.stations))))
+    await ch.send(init_message(model, world.flows(), params.get("scenario")))
     await ch.send(state.message())
     reader = asyncio.create_task(ch.read_commands(ReplayCommands(state, times)))
 
@@ -320,7 +346,7 @@ async def ws_replay(ws: WebSocket, run_id: int,
 
             began, i = time.monotonic(), state.idx
             frame = await asyncio.to_thread(
-                load_replay_frame, session_factory, run_id, times[i], i, len(times))
+                load_replay_frame, session_factory, run_id, times[i], i, len(times), model, schedule)
             await ch.send(frame)
             state.pending = False
             if state.idx == i:                 # unchanged by a concurrent seek

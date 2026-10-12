@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Scenario
 from app.db.session import get_db
-from app.sim.scenario import ScenarioConfig, describe
+from app.sim.scenario import DEFAULT_SCENARIO_NAME, ScenarioConfig, describe
 
 router = APIRouter(prefix="/scenarios", tags=["scenarios"])
 
@@ -49,7 +49,7 @@ def _get_or_404(db: Session, scenario_id: int) -> Scenario:
 @router.get("/default")
 def default_scenario():
     cfg = ScenarioConfig()
-    return {"name": "Default (Starlink-like shell)",
+    return {"name": DEFAULT_SCENARIO_NAME,
             "description": "Built-in scenario used when no scenario is selected",
             "config": cfg.model_dump(), "summary": describe(cfg)}
 

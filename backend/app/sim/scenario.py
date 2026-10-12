@@ -10,6 +10,7 @@ from .links import LinkModel, LinkParams, validate_link_overrides
 from .routing import DEFAULT_FLOW_GBPS
 
 MAX_SATELLITES = 1600
+DEFAULT_SCENARIO_NAME = "Default (Starlink-like shell)"
 
 
 class ConstellationConfig(BaseModel):
@@ -66,12 +67,15 @@ def describe(cfg: ScenarioConfig) -> dict:
     n = c.planes * c.sats_per_plane
     el = math.radians(params.min_elevation_deg)
     lam = math.pi / 2 - el - math.asin(R_EARTH * math.cos(el) / r)   # footprint half-angle
+    spacing_km = 2 * r * math.sin(math.pi / c.sats_per_plane) / 1000
     k = len(cfg.stations)
     return {
         "n_sats": n,
         "period_min": round(2 * math.pi * math.sqrt(r**3 / MU_EARTH) / 60, 2),
         "orbital_speed_kms": round(math.sqrt(MU_EARTH / r) / 1000, 2),
-        "intra_plane_spacing_km": round(2 * r * math.sin(math.pi / c.sats_per_plane) / 1000),
+        "intra_plane_spacing_km": round(spacing_km),
+        "max_isl_range_km": params.max_isl_range_km,
+        "intra_plane_links_in_range": spacing_km <= params.max_isl_range_km,
         "footprint_radius_km": round(R_EARTH * lam / 1000),
         # uniform-coverage estimate; the real value varies with latitude (see the B3 heatmaps)
         "mean_sats_in_view_estimate": round(n * (1 - math.cos(lam)) / 2, 2),

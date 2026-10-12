@@ -1,8 +1,8 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
-from app.api.links import model
-from app.sim.graph import (build_graph, diff_graphs, graph_stats, gs_node,
-                           shortest_latency)
+from app.api.deps import world_from_query
+from app.sim.graph import build_graph, diff_graphs, graph_stats, gs_node, shortest_latency
+from app.sim.worlds import World
 
 router = APIRouter(prefix="/topology", tags=["topology"])
 
@@ -12,7 +12,8 @@ def _round(d: dict) -> dict:
 
 
 @router.get("/summary")
-def summary(t: float = 0.0):
+def summary(t: float = 0.0, world: World = Depends(world_from_query)):
+    model = world.model
     G = build_graph(model, t)
     src = gs_node(0)
     routes = []
@@ -28,7 +29,8 @@ def summary(t: float = 0.0):
 
 
 @router.get("/delta")
-def delta(t0: float = 0.0, t1: float = 60.0):
+def delta(t0: float = 0.0, t1: float = 60.0, world: World = Depends(world_from_query)):
+    model = world.model
     d = diff_graphs(build_graph(model, t0), build_graph(model, t1))
     return {
         "t0": t0, "t1": t1,
@@ -39,9 +41,9 @@ def delta(t0: float = 0.0, t1: float = 60.0):
 
 
 @router.get("/graph")
-def graph(t: float = 0.0):
+def graph(t: float = 0.0, world: World = Depends(world_from_query)):
     """Full node/edge list for the frontend."""
-    G = build_graph(model, t)
+    G = build_graph(world.model, t)
     return {
         "t": t,
         "nodes": [{"id": n, **_round(d)} for n, d in G.nodes(data=True)],

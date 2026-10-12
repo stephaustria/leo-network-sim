@@ -14,6 +14,10 @@ def _mean(xs):
     xs = [x for x in xs if x is not None]
     return mean(xs) if xs else None
 
+def flow_demand(params: dict) -> float:
+    """Per-flow demand (Gbps at load x1) of the scenario this run used."""
+    config = (params.get("scenario") or {}).get("config") or {}
+    return config.get("flow_demand_gbps", DEFAULT_FLOW_GBPS)
 
 def percentile(values, q: float):
     """Nearest-rank percentile, q in (0, 1]."""
@@ -26,7 +30,7 @@ def percentile(values, q: float):
 
 def tick_goodput(tick: dict, params: dict) -> float:
     """Delivered / offered traffic. Unreachable flows count as lost."""
-    offered = tick["flows_total"] * DEFAULT_FLOW_GBPS * params["load_scale"]
+    offered = tick["flows_total"] * flow_demand(params) * params["load_scale"]
     if offered <= 0:
         return 1.0
     return min(1.0, (tick.get("delivered_gbps") or 0.0) / offered)
@@ -79,7 +83,7 @@ def summarize_arm(ticks: list[dict], params: dict) -> dict:
     dt = params["dt"]
     goodput = [tick_goodput(x, params) for x in ticks]
     lost = sum(
-        max(0.0, x["flows_total"] * DEFAULT_FLOW_GBPS * params["load_scale"]
+        max(0.0, x["flows_total"] * flow_demand(params) * params["load_scale"]
             - (x.get("delivered_gbps") or 0.0)) * dt
         for x in ticks
     )

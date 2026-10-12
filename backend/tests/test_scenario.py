@@ -50,3 +50,12 @@ def test_describe_default_scenario():
     assert 1900 < d["intra_plane_spacing_km"] < 2050
     assert 900 < d["footprint_radius_km"] < 1000
     assert 2.5 < d["mean_sats_in_view_estimate"] < 3.3
+    assert d["intra_plane_links_in_range"] is True
+
+def test_describe_flags_sparse_planes_whose_neighbors_are_out_of_isl_range():
+    d = describe(ScenarioConfig(constellation={"planes": 6, "sats_per_plane": 8, "altitude_km": 800}))
+    assert d["intra_plane_spacing_km"] > d["max_isl_range_km"]
+    assert d["intra_plane_links_in_range"] is False
+    fixed = describe(ScenarioConfig(constellation={"planes": 6, "sats_per_plane": 8, "altitude_km": 800},
+                                    link_params={"max_isl_range_km": 8000}))
+    assert fixed["intra_plane_links_in_range"] is True
