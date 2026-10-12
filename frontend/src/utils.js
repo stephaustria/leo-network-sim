@@ -16,3 +16,15 @@ export function utilColor(u) {
 }
 
 export const stationName = (init, id) => init?.stations?.[Number(id.slice(1))]?.name ?? id;
+
+export async function readError(r) {
+  try {
+    const body = await r.json();
+    if (Array.isArray(body.detail)) {
+      return body.detail.map((d) => `${(d.loc ?? []).slice(1).join(".")}: ${d.msg}`).join("; ");
+    }
+    return typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+  } catch {
+    return `HTTP ${r.status}`;
+  }
+}

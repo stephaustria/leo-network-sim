@@ -152,6 +152,7 @@ TUNABLE_LINK_PARAMS = {
     "ground_capacity_gbps": (0.1, 10_000.0),
     "isl_capacity_gbps": (0.1, 10_000.0),
     "min_elevation_deg": (5.0, 60.0),
+    "max_isl_range_km": (500.0, 20_000.0),
 }
 
 

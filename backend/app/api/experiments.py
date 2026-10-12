@@ -7,8 +7,8 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.links import model as link_model
-from app.api.runs import RunRequest, purge_run, to_dict
+from app.api.deps import scenario_snapshot
+from app.api.runs import RunRequest, build_run_params, purge_run, to_dict
 from app.db.models import SimulationRun, TickMetric
 from app.db.persist import execute_run
 from app.db.session import get_db, get_session_factory
@@ -16,6 +16,7 @@ from app.sim.analysis import failure_window, summarize_arm, tick_goodput
 from app.sim.presets import preset_failures
 from app.sim.routing import POLICIES
 from app.sim.serving import DEFAULT_HYSTERESIS_DEG
+from app.sim.worlds import world_for_params
 
 router = APIRouter(prefix="/experiments", tags=["experiments"])
 
@@ -42,6 +43,8 @@ class ExperimentRequest(BaseModel):
     link_params: dict[str, float] = Field(default_factory=dict)
     arms: list[Arm] = Field(default_factory=lambda: [Arm(policy=p) for p in POLICIES],
                             min_length=2, max_length=6)
+    scenario_id: int | None = None                                      # None = default scenario
+    failures: list[dict] = Field(default_factory=list, max_length=200)  # overrides the preset
 
     @model_validator(mode="after")
     def check_ticks(self):
@@ -85,8 +88,10 @@ def run_ticks(db: Session, run_id: int) -> list[dict]:
 def create_experiment(req: ExperimentRequest, background: BackgroundTasks,
                       db: Session = Depends(get_db),
                       session_factory: Callable = Depends(get_session_factory)):
+    snapshot = scenario_snapshot(db, req.scenario_id)               # 404 if missing
+    model = world_for_params({"scenario": snapshot}).model
     failures = req.failures or preset_failures(
-        req.preset, req.t_start, req.duration, req.dt, link_model.c, link_model.pairs)
+        req.preset, req.t_start, req.duration, req.dt, model.c, model.pairs)
     exp_id = uuid.uuid4().hex[:12]
 
     runs = []
@@ -97,8 +102,8 @@ def create_experiment(req: ExperimentRequest, background: BackgroundTasks,
                 policy=arm.policy, route_stickiness=arm.route_stickiness,
                 hysteresis_deg=(arm.hysteresis_deg if arm.hysteresis_deg is not None
                                 else DEFAULT_HYSTERESIS_DEG),
-                failures=failures, link_params=req.link_params)
-            params = run_req.model_dump()
+                scenario_id=req.scenario_id, failures=failures, link_params=req.link_params)
+            params = build_run_params(run_req, db)
             params["experiment"] = {
                 "id": exp_id, "name": req.name, "preset": req.preset, "arm_index": i,
                 "arm": {"policy": arm.policy, "route_stickiness": arm.route_stickiness,
@@ -152,14 +157,15 @@ def get_experiment(exp_id: str, db: Session = Depends(get_db)):
         if r.status == "completed":
             entry["summary"] = summarize_arm(run_ticks(db, r.id), r.params)
         arms.append(entry)
+        scenario = first.get("scenario")
     return {
         "id": exp_id, "name": first["experiment"]["name"], "preset": first["experiment"]["preset"],
         "status": aggregate_status(runs),
+        "scenario": {"id": scenario["id"], "name": scenario["name"]} if scenario else None,
         "params": {k: first[k] for k in ("t_start", "duration", "dt", "load_scale",
                                          "failures", "link_params")},
         "failure_window": failure_window(first.get("failures")),
         "arms": arms,
-
     }
 
 

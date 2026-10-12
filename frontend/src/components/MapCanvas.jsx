@@ -2,11 +2,13 @@ import { useEffect, useRef } from "react";
 import { geoEquirectangular, geoGraticule10, geoPath } from "d3-geo";
 import { feature } from "topojson-client";
 import land from "world-atlas/land-110m.json";
+import { rampColor } from "./heat";
 import { utilColor } from "../utils";
 
 const W = 1200;
 const H = 600;
 const RED = "#ff4d4d";
+const EMPTY = [];
 const projection = geoEquirectangular().fitSize([W, H], { type: "Sphere" });
 const landFeature = feature(land, land.objects.land);
 
@@ -25,6 +27,49 @@ function addSegment(ctx, a, b) {
 }
 
 const pairKey = (a, b) => (a < b ? `${a}-${b}` : `${b}-${a}`);
+
+function drawHeat(ctx, heatmap) {
+  const { grid, values, lo, hi, alpha } = heatmap;
+  const half = grid.res_deg / 2;
+  const span = hi - lo || 1;
+  for (let i = 0; i < grid.n_lat; i++) {
+    const lat = grid.lat0 + i * grid.res_deg;
+    for (let j = 0; j < grid.n_lon; j++) {
+      const v = values[i * grid.n_lon + j];
+      if (v == null) continue;
+      const lon = grid.lon0 + j * grid.res_deg;
+      const [x0, y0] = projection([lon - half, lat + half]);
+      const [x1, y1] = projection([lon + half, lat - half]);
+      ctx.fillStyle = rampColor((v - lo) / span, alpha);
+      ctx.fillRect(x0, y0, x1 - x0 + 0.6, y1 - y0 + 0.6);
+    }
+  }
+}
+
+function cellValue(heatmap, lat, lon) {
+  if (!heatmap) return null;
+  const { grid, values } = heatmap;
+  const i = Math.floor((lat - (grid.lat0 - grid.res_deg / 2)) / grid.res_deg);
+  const j = Math.floor((lon - (grid.lon0 - grid.res_deg / 2)) / grid.res_deg);
+  if (i < 0 || j < 0 || i >= grid.n_lat || j >= grid.n_lon) return null;
+  return values[i * grid.n_lon + j];
+}
+
+function drawStationsOnly(ctx, stations) {
+  ctx.font = "13px system-ui, sans-serif";
+  for (const s of stations) {
+    const [x, y] = projection([s.lon, s.lat]);
+    ctx.beginPath();
+    ctx.arc(x, y, 5, 0, 2 * Math.PI);
+    ctx.fillStyle = "#ff6b6b";
+    ctx.fill();
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = "#fff";
+    ctx.fillText(s.name, x + 9, y + 4);
+  }
+}
 
 function drawFrame(ctx, init, frame, selectedFlow) {
   const sats = frame.sats.map(([lat, lon]) => projection([lon, lat]));
@@ -145,9 +190,13 @@ function drawFrame(ctx, init, frame, selectedFlow) {
   });
 }
 
-export default function MapCanvas({ init, frame, selectedFlow }) {
+export default function MapCanvas({
+  init, frame, selectedFlow, heatmap = null, stations = null, onHover, onMapClick,
+}) {
   const baseRef = useRef(null);
+  const heatRef = useRef(null);
   const overlayRef = useRef(null);
+  const stationList = stations ?? init?.stations ?? EMPTY;
 
   // static layer: drawn once
   useEffect(() => {
@@ -168,16 +217,46 @@ export default function MapCanvas({ init, frame, selectedFlow }) {
     ctx.stroke();
   }, []);
 
-  // per-frame layer
+  // coverage heatmap layer: redrawn only when it changes
+  useEffect(() => {
+    const ctx = heatRef.current.getContext("2d");
+    ctx.clearRect(0, 0, W, H);
+    if (heatmap) drawHeat(ctx, heatmap);
+  }, [heatmap]);
+
+  // network layer: live frame, or just the stations when there is no frame
   useEffect(() => {
     const ctx = overlayRef.current.getContext("2d");
     ctx.clearRect(0, 0, W, H);
     if (init && frame) drawFrame(ctx, init, frame, selectedFlow);
-  }, [init, frame, selectedFlow]);
+    else drawStationsOnly(ctx, stationList);
+  }, [init, frame, selectedFlow, stationList]);
+
+  const toGeo = (e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * W;
+    const y = ((e.clientY - rect.top) / rect.height) * H;
+    const p = projection.invert([x, y]);
+    return p ? { lon: p[0], lat: p[1] } : null;
+  };
 
   return (
-    <div className="map-wrap">
+    <div
+      className="map-wrap"
+      style={{ cursor: onMapClick ? "crosshair" : "default" }}
+      onMouseMove={(e) => {
+        if (!onHover) return;
+        const g = toGeo(e);
+        onHover(g ? { ...g, value: cellValue(heatmap, g.lat, g.lon) } : null);
+      }}
+      onMouseLeave={() => onHover?.(null)}
+      onClick={(e) => {
+        const g = toGeo(e);
+        if (g && onMapClick) onMapClick(g);
+      }}
+    >
       <canvas ref={baseRef} width={W} height={H} />
+      <canvas ref={heatRef} width={W} height={H} />
       <canvas ref={overlayRef} width={W} height={H} />
       <div className="legend">
         <span className="dot" style={{ background: "#7aa2f7" }} /> satellite

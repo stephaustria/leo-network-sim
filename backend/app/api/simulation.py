@@ -1,9 +1,10 @@
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.api.links import model
+from app.api.deps import world_from_query
 from app.sim.engine import Simulation
+from app.sim.worlds import World
 
 router = APIRouter(prefix="/simulation", tags=["simulation"])
 
@@ -17,12 +18,13 @@ def run(
     dt: float = Query(60.0, ge=10, le=600),
     load_scale: float = Query(1.0, ge=0, le=200),
     policy: Literal["min_hop", "shortest_latency", "congestion_aware"] = "congestion_aware",
+    world: World = Depends(world_from_query),
 ):
     steps = int(duration // dt)
     if steps > MAX_TICKS:
         raise HTTPException(400, f"Too many ticks ({steps}); max {MAX_TICKS}. Raise dt or lower duration.")
 
-    sim = Simulation(model, load_scale=load_scale, policy=policy)
+    sim = Simulation(world.model, flows=world.flows(), load_scale=load_scale, policy=policy)
     timeline, handoffs, last = [], [], None
     for k in range(steps + 1):
         last = sim.tick(t_start + k * dt)

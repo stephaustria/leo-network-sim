@@ -19,6 +19,8 @@ A simulator for a LEO satellite constellation **acting as a communications netwo
 - **Failure injection:** fail satellites, whole orbital planes, ground stations or inter-satellite links, live or on a schedule, and watch rerouting and recovery
 - **Routing policies:** min-hop, shortest-latency, and congestion-aware, plus optional route stickiness (damps route flapping) and configurable handoff hysteresis
 - **Experiments:** run several policy arms on identical conditions (failure presets, load, link capacities) and compare goodput, latency, route stability, handoffs and recovery time in charts and a summary table
+- **Scenarios:** save named scenarios (Walker constellation, ground stations, link parameters, flow demand), edit them in the UI with a live analytic summary, and select one for live runs, stored runs and experiments (every run keeps its own snapshot of the scenario it used)
+- **Coverage analysis:** heatmaps of availability, satellites in view, access latency and longest outage over the globe, with a latitude profile and per-station statistics, for any saved or unsaved scenario
 
 ## Architecture
 
@@ -62,6 +64,9 @@ Requirements: Python 3.12, Node 20.19+ (or 22.12+), Docker.
 # database
 docker compose up -d db
 
+# apply database migrations (once, and again whenever migrations change)
+cd backend && alembic upgrade head
+
 # backend
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r backend/requirements.txt
@@ -77,6 +82,17 @@ Tests (the backend tests use in-memory SQLite and need no database):
 cd backend && pytest
 ```
 
+## Database migrations
+
+The schema is managed with Alembic (`backend/migrations/`). Docker applies migrations automatically on start.
+
+```bash
+cd backend
+alembic upgrade head                                  # apply migrations
+alembic revision --autogenerate -m "describe change"  # after editing app/db/models.py
+alembic check                                         # fails if models and migrations differ
+```
+
 ## API overview
 
 | Endpoint | Description |
@@ -90,6 +106,9 @@ cd backend && pytest
 | `WS /ws/replay/{run_id}` | Replay of a stored run with seek and speed controls |
 | `POST /experiments`, `GET /experiments/{id}`, `GET /experiments/{id}/timelines` | Policy-comparison experiments: one scenario, several arms, aggregated stats and aligned time series |
 | `WS /ws/live` commands `fail`, `recover`, `set` | Inject or recover failures and change policy, stickiness, hysteresis or load while the simulation runs |
+| `GET/POST /scenarios`, `GET/PUT/DELETE /scenarios/{id}`, `GET /scenarios/default`, `POST /scenarios/preview` | Saved scenarios (constellation, stations, link parameters) with validation and analytic summaries |
+| `GET /coverage`, `POST /coverage/preview` | Coverage heatmap data for a saved scenario (`?scenario_id=`) or any unsaved config |
+| `scenario_id` parameter | Accepted by REST endpoints, `POST /runs`, `POST /experiments`, and `/ws/live?scenario_id=` |
 
 ## Model assumptions
 

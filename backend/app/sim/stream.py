@@ -56,10 +56,11 @@ def live_frame(model, res, progress=None) -> dict:
     )
 
 
-def init_message(model, flows) -> dict:
+def init_message(model, flows, scenario=None) -> dict:
     cfg = model.c.cfg
     return {
         "type": "init",
+        "scenario": {"id": scenario["id"], "name": scenario["name"]} if scenario else None,
         "constellation": {
             "n_sats": model.c.n_sats, "planes": cfg.planes,
             "sats_per_plane": cfg.sats_per_plane, "altitude_km": cfg.altitude_km,

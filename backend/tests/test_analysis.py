@@ -106,3 +106,9 @@ def test_link_overrides():
         validate_link_overrides({"bogus": 1})
     with pytest.raises(ValueError):
         validate_link_overrides({"ground_capacity_gbps": 0})
+
+def test_goodput_uses_the_scenario_flow_demand():
+    p = params()
+    base = tick_goodput(tick(0, 0.75), p)                    # offered 10 x 0.15 = 1.5 -> 0.5
+    p2 = {**p, "scenario": {"config": {"flow_demand_gbps": 0.3}}}
+    assert tick_goodput(tick(0, 0.75), p2) == pytest.approx(base / 2)

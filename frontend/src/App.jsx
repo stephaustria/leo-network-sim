@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { API_URL } from "./config";
 import Charts from "./components/Charts";
 import { LiveControls, ReplayControls } from "./components/Controls";
+import CoverageOverlay from "./components/CoverageOverlay";
 import EventLog from "./components/EventLog";
 import ExperimentForm from "./components/ExperimentForm";
 import ExperimentList from "./components/ExperimentList";
@@ -10,19 +11,30 @@ import FlowTable from "./components/FlowTable";
 import { FailurePanel, PolicyControls } from "./components/LiveExtras";
 import MapCanvas from "./components/MapCanvas";
 import MetricsPanel from "./components/MetricsPanel";
+import ScenarioPicker from "./components/ScenarioPicker";
+import ScenariosTab from "./components/ScenariosTab";
+import { makeHeatmap } from "./components/heat";
+import { useCoverage } from "./hooks/useCoverage";
 import { useExperiments } from "./hooks/useExperiments";
 import { useRuns } from "./hooks/useRuns";
+import { useScenarios } from "./hooks/useScenarios";
 import { useSimStream } from "./hooks/useSimStream";
 import "./App.css";
 
-const MODES = [["live", "Live"], ["replay", "Replay"], ["experiments", "Experiments"]];
+const MODES = [["live", "Live"], ["replay", "Replay"], ["experiments", "Experiments"], ["scenarios", "Scenarios"]];
+const OVERLAY_PARAMS = { res_deg: 5, window_hours: 12, step_s: 180 };
+const DEFAULT_NAME = "Default (Starlink-like shell)";
 
 export default function App() {
   const { status, init, frame, serverState, history, error, finished, open, close, send } = useSimStream();
+  const scenarios = useScenarios();
   const { runs, create } = useRuns();
   const exp = useExperiments();
+  const overlayCoverage = useCoverage();
 
   const [mode, setMode] = useState("live");
+  const [scenarioId, setScenarioId] = useState(null);          // null = built-in default
+  const [overlay, setOverlay] = useState({ enabled: false, metric: "availability" });
   const [selected, setSelected] = useState(null);
   const [runId, setRunId] = useState(null);
   const [loadedRun, setLoadedRun] = useState(null);
@@ -32,11 +44,31 @@ export default function App() {
   const [events, setEvents] = useState([]);
   const lastT = useRef(-1);
 
-  // live mode keeps a socket open; replay opens one when a run is loaded
+  const scenarioName = scenarioId == null
+    ? DEFAULT_NAME
+    : scenarios.list.find((s) => s.id === scenarioId)?.name ?? `#${scenarioId}`;
+
+  // The live socket follows the mode and the selected scenario. In other modes the target is
+  // null, so changing the scenario there never touches a replay socket.
+  const liveTarget = mode === "live"
+    ? (scenarioId == null ? "/ws/live" : `/ws/live?scenario_id=${scenarioId}`)
+    : null;
   useEffect(() => {
-    if (mode === "live") open("/ws/live");
+    if (liveTarget) open(liveTarget);
     else close();
-  }, [mode, open, close]);
+  }, [liveTarget, open, close]);
+
+  // coverage overlay for the Live tab
+  useEffect(() => {
+    if (mode === "live" && overlay.enabled) {
+      overlayCoverage.compute({ scenarioId, params: OVERLAY_PARAMS });
+    }
+  }, [mode, overlay.enabled, scenarioId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const heatmap = useMemo(
+    () => (mode === "live" && overlay.enabled ? makeHeatmap(overlayCoverage.data, overlay.metric, 0.5) : null),
+    [mode, overlay.enabled, overlay.metric, overlayCoverage.data]
+  );
 
   // reset the event log on every new connection
   useEffect(() => {
@@ -85,7 +117,10 @@ export default function App() {
   const createRun = async (loadScale) => {
     setCreating(true);
     try {
-      const id = await create({ t_start: 0, duration: 1800, dt: 60, load_scale: loadScale });
+      const id = await create({
+        t_start: 0, duration: 1800, dt: 60, load_scale: loadScale,
+        ...(scenarioId != null ? { scenario_id: scenarioId } : {}),
+      });
       setRunId(id);
     } catch (e) {
       alert(`Could not create run: ${e.message}`);
@@ -97,6 +132,7 @@ export default function App() {
   const flows = frame?.flows ?? null;
   const selectedFlow = selected != null && flows ? flows[selected] : null;
   const chartData = mode === "live" ? history : timeline;
+  const networkMode = mode === "live" || mode === "replay";
 
   return (
     <div className="app">
@@ -110,31 +146,48 @@ export default function App() {
             </button>
           ))}
         </div>
-        {mode !== "experiments" && <span className={`badge ${status}`}>{status}</span>}
-        {mode !== "experiments" && init && (
+        {mode !== "scenarios" && (
+          <span title="Applies to the Live tab and to new runs and experiments">
+            <ScenarioPicker list={scenarios.list} value={scenarioId} onChange={setScenarioId} />
+          </span>
+        )}
+        {networkMode && <span className={`badge ${status}`}>{status}</span>}
+        {networkMode && init && (
           <span className="dim">
-            {init.constellation.n_sats} sats · {init.constellation.altitude_km} km · {init.constellation.inclination_deg}°
+            {init.scenario?.name ? `${init.scenario.name} · ` : ""}{init.constellation.n_sats} sats ·{" "}
+            {init.constellation.altitude_km} km · {init.constellation.inclination_deg}°
           </span>
         )}
       </header>
 
-      {error && mode !== "experiments" && <div className="error">{error}</div>}
+      {error && networkMode && <div className="error">{error}</div>}
 
-      {mode === "experiments" ? (
+      {mode === "scenarios" && (
+        <ScenariosTab
+          scenarios={scenarios}
+          activeScenarioId={scenarioId}
+          onUse={setScenarioId}
+          onDeleted={(id) => { if (id === scenarioId) setScenarioId(null); }}
+        />
+      )}
+
+      {mode === "experiments" && (
         <main>
           <section className="left">
             <ExperimentResults detail={exp.detail} timelines={exp.timelines} onReplay={replayRun} />
           </section>
           <aside className="right">
-            <ExperimentForm onSubmit={exp.create} />
+            <ExperimentForm onSubmit={exp.create} scenarioId={scenarioId} scenarioName={scenarioName} />
             <ExperimentList list={exp.list} selectedId={exp.selectedId}
                             onSelect={exp.select} onDelete={exp.remove} />
           </aside>
         </main>
-      ) : (
+      )}
+
+      {networkMode && (
         <main>
           <section className="left">
-            <MapCanvas init={init} frame={frame} selectedFlow={selectedFlow} />
+            <MapCanvas init={init} frame={frame} selectedFlow={selectedFlow} heatmap={heatmap} />
             <Charts data={chartData} cursorT={frame?.t} />
           </section>
 
@@ -144,6 +197,7 @@ export default function App() {
                 <LiveControls send={send} serverState={serverState} finished={finished} />
                 <PolicyControls send={send} serverState={serverState} />
                 <FailurePanel init={init} frame={frame} send={send} started={!!serverState?.started} />
+                <CoverageOverlay overlay={overlay} setOverlay={setOverlay} state={overlayCoverage} />
               </>
             ) : (
               <ReplayControls

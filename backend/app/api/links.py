@@ -1,16 +1,15 @@
 import numpy as np
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
-from app.api.constellation import constellation
-from app.sim.links import LinkModel
+from app.api.deps import world_from_query
+from app.sim.worlds import World
 
 router = APIRouter(prefix="/links", tags=["links"])
 
-model = LinkModel(constellation)
-
 
 @router.get("/summary")
-def summary(t: float = 0.0):
+def summary(t: float = 0.0, world: World = Depends(world_from_query)):
+    model = world.model
     snap = model.snapshot(t)
     isl, gl = snap.isl, snap.ground
 
@@ -31,15 +30,12 @@ def summary(t: float = 0.0):
         else:
             stations.append({"name": st.name, "visible_sats": 0})
 
-    return {
-        "t": t,
-        "isl": {
-            "active": int(len(isl.a)),
-            "candidates": snap.n_isl_candidates,
+    isl_stats = {"active": int(len(isl.a)), "candidates": snap.n_isl_candidates}
+    if len(isl.a):
+        isl_stats.update({
             "latency_ms_min": round(float(isl.latency_ms.min()), 2),
             "latency_ms_mean": round(float(isl.latency_ms.mean()), 2),
             "latency_ms_max": round(float(isl.latency_ms.max()), 2),
-        },
-        "ground_links": int(len(gl.sat)),
-        "stations": stations,
-    }
+        })
+
+    return {"t": t, "isl": isl_stats, "ground_links": int(len(gl.sat)), "stations": stations}

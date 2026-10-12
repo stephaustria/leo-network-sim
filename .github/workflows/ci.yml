@@ -1,5 +1,3 @@
-# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
-
 name: CI
 
 on:
@@ -23,6 +21,38 @@ jobs:
       - run: pip install -r requirements.txt
       - run: pytest -q
 
+  migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: sim
+          POSTGRES_PASSWORD: sim
+          POSTGRES_DB: netsim
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sim -d netsim"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://sim:sim@localhost:5432/netsim
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - run: alembic upgrade head
+      - run: alembic check
+
   frontend:
     runs-on: ubuntu-latest
     defaults:
@@ -39,7 +69,7 @@ jobs:
       - run: npm run build
 
   docker:
-    needs: [backend, frontend]
+    needs: [backend, migrations, frontend]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

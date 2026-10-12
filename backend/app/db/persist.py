@@ -3,16 +3,15 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from app.api.links import model as link_model
 from app.db.models import (FlowSample, HandoffRecord, LinkSample, SimulationRun,
                            TickMetric)
 from app.db.session import SessionLocal
 from app.sim.engine import Simulation, StepResult
 from app.sim.failures import FailureSchedule
+from app.sim.routing import TrafficParams
 from app.sim.serving import DEFAULT_HYSTERESIS_DEG
 from app.sim.stream import links_from_graph
-from app.sim.links import with_overrides
-from app.sim.routing import TrafficParams
+from app.sim.worlds import world_for_params
 
 
 def persist_tick(db: Session, run_id: int, res: StepResult) -> None:
@@ -33,15 +32,17 @@ def execute_run(run_id: int, session_factory=SessionLocal) -> None:
     try:
         run = db.get(SimulationRun, run_id)
         p = run.params
+        world = world_for_params(p)              # the run's own scenario snapshot
+        model = world.model
         steps = int(p["duration"] // p["dt"])
-        lm = with_overrides(link_model, p.get("link_params"))
         sim = Simulation(
-            lm,
+            model,
+            flows=world.flows(),
             load_scale=p["load_scale"],
             params=TrafficParams(route_stickiness=p.get("route_stickiness", 0.0)),
             policy=p.get("policy", "congestion_aware"),
-            schedule=FailureSchedule.from_dicts(p.get("failures"), lm.c, len(lm.stations)),
             hysteresis_deg=p.get("hysteresis_deg", DEFAULT_HYSTERESIS_DEG),
+            schedule=FailureSchedule.from_dicts(p.get("failures"), model.c, len(model.stations)),
         )
 
         for k in range(steps + 1):

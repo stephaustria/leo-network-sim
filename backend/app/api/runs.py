@@ -5,13 +5,14 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from app.api.links import model as link_model
+from app.api.deps import scenario_snapshot
 from app.db.models import (FlowSample, HandoffRecord, LinkSample, SimulationRun,
                            TickMetric)
 from app.db.persist import execute_run
 from app.db.session import get_db, get_session_factory
 from app.sim.failures import FailureSchedule
 from app.sim.links import validate_link_overrides
+from app.sim.worlds import world_for_params
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -26,15 +27,14 @@ class RunRequest(BaseModel):
     policy: Literal["min_hop", "shortest_latency", "congestion_aware"] = "congestion_aware"
     route_stickiness: float = Field(0.0, ge=0, le=0.5)
     hysteresis_deg: float = Field(15.0, ge=0, le=60)
-    failures: list[dict] = Field(default_factory=list, max_length=50)
+    scenario_id: int | None = None                      # None = built-in default scenario
+    failures: list[dict] = Field(default_factory=list, max_length=200)
     link_params: dict[str, float] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def check_request(self):
         if self.duration // self.dt > MAX_TICKS:
             raise ValueError(f"too many ticks (max {MAX_TICKS}); raise dt or lower duration")
-        sched = FailureSchedule.from_dicts(self.failures, link_model.c, len(link_model.stations))
-        self.failures = sched.to_dicts()
         self.link_params = validate_link_overrides(self.link_params)
         return self
 
@@ -49,6 +49,18 @@ def get_run_or_404(db: Session, run_id: int) -> SimulationRun:
         raise HTTPException(404, "run not found")
     return run
 
+def build_run_params(req: RunRequest, db: Session) -> dict:
+    """Validated, self-contained params for a run: the request plus a snapshot of its scenario."""
+    snapshot = scenario_snapshot(db, req.scenario_id)               # 404 if the scenario is missing
+    world = world_for_params({"scenario": snapshot})
+    try:
+        schedule = FailureSchedule.from_dicts(req.failures, world.model.c, len(world.model.stations))
+    except ValueError as exc:
+        raise HTTPException(422, f"failures: {exc}")
+    params = req.model_dump()
+    params["failures"] = schedule.to_dicts()
+    params["scenario"] = snapshot
+    return params
 
 def nearest_tick(db: Session, run_id: int, t: float | None) -> float:
     if t is None:
@@ -66,7 +78,7 @@ def nearest_tick(db: Session, run_id: int, t: float | None) -> float:
 def create_run(req: RunRequest, background: BackgroundTasks,
                db: Session = Depends(get_db),
                session_factory: Callable = Depends(get_session_factory)):
-    run = SimulationRun(params=req.model_dump(), status="running")
+    run = SimulationRun(params=build_run_params(req, db), status="running")
     db.add(run)
     db.commit()
     background.add_task(execute_run, run.id, session_factory)
