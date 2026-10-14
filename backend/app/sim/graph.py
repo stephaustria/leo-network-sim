@@ -35,6 +35,7 @@ def build_graph(model: LinkModel, t: float, snap=None, serving: dict | None = No
     G = nx.Graph(t=t)
     for i in range(c.n_sats):
         G.add_node(sat_node(i), kind="sat", plane=int(c.plane[i]), slot=int(c.slot[i]),
+                   shell=int(c.shell_of[i]),
                    lat=float(lat[i]), lon=float(lon[i]), alt_km=float(alt[i]) / 1000)
     for i, st in enumerate(model.stations):
         G.add_node(gs_node(i), kind="ground", name=st.name, lat=st.lat, lon=st.lon)

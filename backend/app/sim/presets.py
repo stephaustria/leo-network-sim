@@ -23,7 +23,7 @@ def preset_failures(preset: str, t_start: float, duration: float, dt: float, c, 
     if preset == "plane_outage":
         return [{"kind": "plane", "target": min(5, c.n_planes - 1), **window}]
     if preset == "adjacent_planes":
-        return [{"kind": "plane", "target": q, **window} for q in (p, p + 1)]
+        return [{"kind": "plane", "target": q, **window} for q in (p, c.next_plane(p))]
     if preset == "station_loss":
         return [{"kind": "station", "target": 0, **window}]
     if preset == "plane_seam_cut":
@@ -32,8 +32,10 @@ def preset_failures(preset: str, t_start: float, duration: float, dt: float, c, 
     raise ValueError(f"unknown preset {preset!r}; choose from {PRESETS}")
 
 def seam_cut(c, pairs, p: int, t_start: float, t_end: float | None = None) -> list[dict]:
-    """ISL failure events for every cross-plane link between plane p and plane p+1."""
-    planes = {p % c.n_planes, (p + 1) % c.n_planes}
+    """ISL failure events for every cross-plane link between plane p and its neighbour
+    in the same shell (the last plane of a shell is adjacent to the first)."""
+    p = p % c.n_planes
+    planes = {p, c.next_plane(p)}
     return [{"kind": "isl", "target": [int(a), int(b)], "t_start": t_start, "t_end": t_end}
             for a, b in pairs
             if {int(c.plane[a]), int(c.plane[b])} == planes]

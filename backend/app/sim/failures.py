@@ -101,7 +101,7 @@ class FailureSchedule:
             if e.kind == "satellite":
                 state.sats.add(e.target)
             elif e.kind == "plane":
-                state.sats.update(range(e.target * c.per_plane, (e.target + 1) * c.per_plane))
+                state.sats.update(int(i) for i in c.sats_in_plane(e.target))
             elif e.kind == "station":
                 state.stations.add(e.target)
             else:

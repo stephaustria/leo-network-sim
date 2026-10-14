@@ -156,6 +156,7 @@ export default function App() {
           <span className="dim">
             {init.scenario?.name ? `${init.scenario.name} · ` : ""}{init.constellation.n_sats} sats ·{" "}
             {init.constellation.altitude_km} km · {init.constellation.inclination_deg}°
+            {init.constellation.shells?.length > 1 ? ` · ${init.constellation.shells.length} shells` : ""}
           </span>
         )}
       </header>

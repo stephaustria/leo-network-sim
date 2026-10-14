@@ -57,15 +57,25 @@ def live_frame(model, res, progress=None) -> dict:
 
 
 def init_message(model, flows, scenario=None) -> dict:
-    cfg = model.c.cfg
+    c = model.c
     return {
         "type": "init",
         "scenario": {"id": scenario["id"], "name": scenario["name"]} if scenario else None,
         "constellation": {
-            "n_sats": model.c.n_sats, "planes": cfg.planes,
-            "sats_per_plane": cfg.sats_per_plane, "altitude_km": cfg.altitude_km,
-            "inclination_deg": cfg.inclination_deg,
-            "period_min": round(float(model.c.period_s) / 60, 2),
+            "n_sats": c.n_sats,
+            "planes": c.n_planes,                    # total planes across shells
+            "sats_per_plane": c.per_plane,           # first shell
+            "altitude_km": c.cfg.altitude_km,        # first shell
+            "inclination_deg": c.cfg.inclination_deg,
+            "period_min": round(float(c.period_s) / 60, 2),
+            "shells": [
+                {"index": s.index, "n_sats": s.n_sats, "offset": s.offset,
+                 "planes": s.n_planes, "plane_offset": s.plane_offset,
+                 "sats_per_plane": s.per_plane, "altitude_km": s.cfg.altitude_km,
+                 "inclination_deg": s.cfg.inclination_deg,
+                 "period_min": round(float(s.period_s) / 60, 2)}
+                for s in c.shells
+            ],
         },
         "stations": [{"id": i, "name": s.name, "lat": s.lat, "lon": s.lon}
                      for i, s in enumerate(model.stations)],

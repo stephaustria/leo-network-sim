@@ -29,7 +29,7 @@ def _brief(s: Scenario) -> dict:
     cfg = ScenarioConfig.model_validate(s.config)
     return {"id": s.id, "name": s.name, "description": s.description,
             "created_at": s.created_at, "updated_at": s.updated_at,
-            "n_sats": cfg.constellation.planes * cfg.constellation.sats_per_plane,
+            "n_sats": cfg.total_sats(),
             "n_stations": len(cfg.stations)}
 
 

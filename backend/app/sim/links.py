@@ -70,19 +70,20 @@ def clear_of_earth(p1: np.ndarray, p2: np.ndarray, margin_m: float) -> np.ndarra
 
 
 def build_isl_topology(c: Constellation):
-    """+Grid ISL pairs. Returns (pairs (M,2), is_cross_plane (M,))."""
-    P, S, F = c.n_planes, c.per_plane, c.cfg.phasing
+    """+Grid ISL pairs inside every shell. Returns (pairs (M,2) global indices, is_cross_plane (M,))."""
     links: dict[tuple[int, int], bool] = {}
-    for p in range(P):
-        for s in range(S):
-            a = c.sat_index(p, s)
-            b = c.sat_index(p, s + 1)                      # intra-plane
-            if a != b:
-                links[(min(a, b), max(a, b))] = False
-            shift = F if p == P - 1 else 0                 # Walker wrap-around alignment
-            b = c.sat_index(p + 1, s + shift)              # cross-plane
-            if a != b:
-                links.setdefault((min(a, b), max(a, b)), True)
+    for shell in c.shells:
+        P, S, F = shell.n_planes, shell.per_plane, shell.cfg.phasing
+        for p in range(P):
+            for s in range(S):
+                a = shell.offset + shell.sat_index(p, s)
+                b = shell.offset + shell.sat_index(p, s + 1)                # intra-plane
+                if a != b:
+                    links[(min(a, b), max(a, b))] = False
+                shift = F if p == P - 1 else 0                              # Walker wrap-around alignment
+                b = shell.offset + shell.sat_index(p + 1, s + shift)        # cross-plane
+                if a != b:
+                    links.setdefault((min(a, b), max(a, b)), True)
     keys = sorted(links)
     return np.array(keys), np.array([links[k] for k in keys])
 

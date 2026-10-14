@@ -10,6 +10,7 @@ from .links import LinkModel, LinkParams, validate_link_overrides
 from .routing import DEFAULT_FLOW_GBPS
 
 MAX_SATELLITES = 1600
+MAX_EXTRA_SHELLS = 3
 DEFAULT_SCENARIO_NAME = "Default (Starlink-like shell)"
 
 
@@ -32,19 +33,26 @@ def _default_stations() -> list[StationConfig]:
 
 
 class ScenarioConfig(BaseModel):
-    constellation: ConstellationConfig = Field(default_factory=ConstellationConfig)
+    constellation: ConstellationConfig = Field(default_factory=ConstellationConfig)     # shell 1
+    extra_shells: list[ConstellationConfig] = Field(default_factory=list, max_length=MAX_EXTRA_SHELLS)
     stations: list[StationConfig] = Field(default_factory=_default_stations, min_length=2, max_length=20)
     link_params: dict[str, float] = Field(default_factory=dict)
     flow_demand_gbps: float = Field(DEFAULT_FLOW_GBPS, gt=0, le=10)
 
+    def shells(self) -> list[ConstellationConfig]:
+        return [self.constellation, *self.extra_shells]
+
+    def total_sats(self) -> int:
+        return sum(s.planes * s.sats_per_plane for s in self.shells())
+
     @model_validator(mode="after")
     def check_scenario(self):
-        c = self.constellation
-        if c.planes * c.sats_per_plane > MAX_SATELLITES:
+        for i, s in enumerate(self.shells(), start=1):
+            if s.phasing >= s.planes:
+                raise ValueError(f"shell {i}: phasing must be smaller than the number of planes")
+        if self.total_sats() > MAX_SATELLITES:
             raise ValueError(
-                f"at most {MAX_SATELLITES} satellites ({c.planes} x {c.sats_per_plane} is too many)")
-        if c.phasing >= c.planes:
-            raise ValueError("phasing must be smaller than the number of planes")
+                f"at most {MAX_SATELLITES} satellites in total (this scenario has {self.total_sats()})")
         names = [s.name.strip().lower() for s in self.stations]
         if len(set(names)) != len(names):
             raise ValueError("station names must be unique")
@@ -54,31 +62,48 @@ class ScenarioConfig(BaseModel):
 
 def build_world(cfg: ScenarioConfig) -> LinkModel:
     """Turn a validated scenario into a ready-to-simulate LinkModel."""
-    constellation = Constellation(WalkerConfig(**cfg.constellation.model_dump()))
+    constellation = Constellation([WalkerConfig(**s.model_dump()) for s in cfg.shells()])
     stations = [GroundStation(s.name.strip(), s.lat, s.lon) for s in cfg.stations]
     return LinkModel(constellation, stations, replace(LinkParams(), **cfg.link_params))
 
 
-def describe(cfg: ScenarioConfig) -> dict:
-    """Quick analytic facts about a scenario, cheap enough to show live in an editor."""
-    c = cfg.constellation
-    params = replace(LinkParams(), **cfg.link_params)
-    r = R_EARTH + c.altitude_km * 1000.0
-    n = c.planes * c.sats_per_plane
+def _describe_shell(s: ConstellationConfig, params: LinkParams) -> dict:
+    r = R_EARTH + s.altitude_km * 1000.0
+    n = s.planes * s.sats_per_plane
     el = math.radians(params.min_elevation_deg)
-    lam = math.pi / 2 - el - math.asin(R_EARTH * math.cos(el) / r)   # footprint half-angle
-    spacing_km = 2 * r * math.sin(math.pi / c.sats_per_plane) / 1000
-    k = len(cfg.stations)
+    lam = math.pi / 2 - el - math.asin(R_EARTH * math.cos(el) / r)       # footprint half-angle
+    spacing_km = 2 * r * math.sin(math.pi / s.sats_per_plane) / 1000
     return {
         "n_sats": n,
+        "altitude_km": s.altitude_km,
+        "inclination_deg": s.inclination_deg,
         "period_min": round(2 * math.pi * math.sqrt(r**3 / MU_EARTH) / 60, 2),
         "orbital_speed_kms": round(math.sqrt(MU_EARTH / r) / 1000, 2),
         "intra_plane_spacing_km": round(spacing_km),
-        "max_isl_range_km": params.max_isl_range_km,
         "intra_plane_links_in_range": spacing_km <= params.max_isl_range_km,
         "footprint_radius_km": round(R_EARTH * lam / 1000),
-        # uniform-coverage estimate; the real value varies with latitude (see the B3 heatmaps)
-        "mean_sats_in_view_estimate": round(n * (1 - math.cos(lam)) / 2, 2),
+        # uniform-coverage estimate; the real value varies with latitude (see the coverage heatmaps)
+        "mean_sats_in_view_estimate": round(n * (1 - math.cos(lam)) / 2, 3),
+    }
+
+
+def describe(cfg: ScenarioConfig) -> dict:
+    """Quick analytic facts about a scenario. Top-level orbit fields describe shell 1,
+    `shells` has one entry per shell, and totals cover everything."""
+    params = replace(LinkParams(), **cfg.link_params)
+    per_shell = [_describe_shell(s, params) for s in cfg.shells()]
+    first = per_shell[0]
+    k = len(cfg.stations)
+    return {
+        "n_sats": cfg.total_sats(),
+        "period_min": first["period_min"],
+        "orbital_speed_kms": first["orbital_speed_kms"],
+        "intra_plane_spacing_km": first["intra_plane_spacing_km"],
+        "max_isl_range_km": params.max_isl_range_km,
+        "intra_plane_links_in_range": all(p["intra_plane_links_in_range"] for p in per_shell),
+        "footprint_radius_km": first["footprint_radius_km"],
+        "mean_sats_in_view_estimate": round(sum(p["mean_sats_in_view_estimate"] for p in per_shell), 2),
         "n_stations": k,
         "n_flows": k * (k - 1) // 2,
+        "shells": per_shell,
     }
