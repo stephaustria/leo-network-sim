@@ -4,6 +4,7 @@ from typing import Sequence
 import numpy as np
 
 from .constants import MU_EARTH, R_EARTH
+from .frames import eci_to_ecef, gmst, jd_to_datetime, rotate_z
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,9 @@ class Shell:
     `offset` is the global index of the shell's first satellite and `plane_offset`
     the global id of its first plane.
     """
+
+    kind = "walker"
+    uniform_radius = True            # every satellite shares one altitude
 
     def __init__(self, cfg: WalkerConfig, index: int = 0, offset: int = 0, plane_offset: int = 0):
         self.cfg = cfg
@@ -46,6 +50,10 @@ class Shell:
         )
 
     @property
+    def plane_ids(self) -> np.ndarray:
+        return self.plane_local + self.plane_offset
+
+    @property
     def period_s(self) -> float:
         return 2 * np.pi / self.mean_motion
 
@@ -53,7 +61,7 @@ class Shell:
         """Shell-local index for (plane, slot), wrapping both around."""
         return (plane % self.n_planes) * self.per_plane + (slot % self.per_plane)
 
-    def positions_eci(self, t: float) -> np.ndarray:
+    def positions_eci(self, t: float, epoch_jd: float | None = None) -> np.ndarray:
         """ECI positions in meters, shape (n_sats, 3), at t seconds after epoch."""
         u = self.u0 + self.mean_motion * t
         cu, su = np.cos(u), np.sin(u)
@@ -65,33 +73,53 @@ class Shell:
         z = self.radius * (si * su)
         return np.column_stack([x, y, z])
 
+    def summary(self) -> dict:
+        return {
+            "kind": "walker", "index": self.index, "n_sats": self.n_sats, "offset": self.offset,
+            "planes": self.n_planes, "plane_offset": self.plane_offset,
+            "sats_per_plane": self.per_plane, "altitude_km": self.cfg.altitude_km,
+            "inclination_deg": self.cfg.inclination_deg,
+            "period_min": round(float(self.period_s) / 60, 2),
+        }
+
 
 class Constellation:
-    """One or more Walker shells. Satellites are numbered shell by shell.
+    """Walker shells and/or TLE shells. Satellites are numbered shell by shell.
 
     Single-shell attributes (cfg, per_plane, radius, period_s, mean_motion, sat_index)
-    describe the FIRST shell, so code written for one shell keeps working.
-    `plane` holds global plane ids: shell 0's planes first, then shell 1's, and so on.
+    describe the FIRST shell and need it to be a Walker shell, which keeps code written
+    for one shell working. `plane` holds global plane ids (-1 for TLE satellites).
+
+    `epoch_jd` is the Julian date of simulation time 0. Without it, Earth's rotation angle is
+    rate x t (the simplified model). With it, the angle is the real sidereal time. A TLE shell
+    needs an epoch, and defaults to the shell's own median TLE epoch.
     """
 
-    def __init__(self, shells: WalkerConfig | Sequence[WalkerConfig] = WalkerConfig()):
-        configs = [shells] if isinstance(shells, WalkerConfig) else list(shells)
-        if not configs:
+    def __init__(self, shells=WalkerConfig(), epoch_jd: float | None = None):
+        single = isinstance(shells, WalkerConfig) or hasattr(shells, "positions_eci")
+        items = [shells] if single else list(shells)
+        if not items:
             raise ValueError("a constellation needs at least one shell")
 
-        self.shells: list[Shell] = []
+        self.shells: list = []
         sat_offset = plane_offset = 0
-        for i, cfg in enumerate(configs):
-            shell = Shell(cfg, i, sat_offset, plane_offset)
+        for i, item in enumerate(items):
+            if isinstance(item, WalkerConfig):
+                shell = Shell(item, i, sat_offset, plane_offset)
+            else:
+                shell = item.place(i, sat_offset, plane_offset)
             self.shells.append(shell)
             sat_offset += shell.n_sats
             plane_offset += shell.n_planes
 
         self.n_sats = sat_offset
-        self.n_planes = plane_offset                       # total planes across all shells
-        self.plane = np.concatenate([s.plane_local + s.plane_offset for s in self.shells])
+        self.n_planes = plane_offset                       # total planes across Walker shells
+        self.plane = np.concatenate([s.plane_ids for s in self.shells])
         self.slot = np.concatenate([s.slot for s in self.shells])
         self.shell_of = np.concatenate([np.full(s.n_sats, s.index) for s in self.shells])
+
+        tle_epochs = [s.epoch_jd for s in self.shells if s.kind == "tle"]
+        self.epoch_jd = epoch_jd if epoch_jd is not None else (tle_epochs[0] if tle_epochs else None)
 
     # ----- first-shell views (backward compatible) -----
     @property
@@ -117,8 +145,12 @@ class Constellation:
     def sat_index(self, plane: int, slot: int) -> int:
         return self.shells[0].sat_index(plane, slot)
 
+    @property
+    def epoch(self):
+        return None if self.epoch_jd is None else jd_to_datetime(self.epoch_jd)
+
     # ----- multi-shell helpers -----
-    def shell_of_plane(self, plane: int) -> Shell:
+    def shell_of_plane(self, plane: int):
         for shell in self.shells:
             if shell.plane_offset <= plane < shell.plane_offset + shell.n_planes:
                 return shell
@@ -136,9 +168,11 @@ class Constellation:
 
     # ----- positions -----
     def positions_eci(self, t: float) -> np.ndarray:
-        """ECI positions in meters, shape (N, 3), at t seconds after epoch."""
-        return np.concatenate([s.positions_eci(t) for s in self.shells])
+        """Inertial positions in meters, shape (N, 3), at t seconds after the epoch."""
+        return np.concatenate([s.positions_eci(t, self.epoch_jd) for s in self.shells])
 
     def positions_ecef(self, t: float) -> np.ndarray:
-        from .frames import eci_to_ecef
-        return eci_to_ecef(self.positions_eci(t), t)
+        eci = self.positions_eci(t)
+        if self.epoch_jd is None:
+            return eci_to_ecef(eci, t)
+        return rotate_z(eci, gmst(self.epoch_jd + t / 86400.0))

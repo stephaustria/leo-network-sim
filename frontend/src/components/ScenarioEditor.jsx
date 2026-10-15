@@ -24,6 +24,17 @@ export default function ScenarioEditor({
   if (!draft) return <div className="panel"><div className="dim">Loading…</div></div>;
 
   const cfg = draft.config;
+  if (!cfg.constellation) {
+    return (
+      <div className="panel">
+        <h3>{draft.name}</h3>
+        <div className="dim">
+          This scenario has no Walker shell (real TLE data only). Editing TLE scenarios arrives in the next step.
+          You can still compute coverage and use it for simulations.
+        </div>
+      </div>
+    );
+  }
   const c = cfg.constellation;
   const setCfg = (fn) => setDraft((d) => ({ ...d, config: fn(d.config) }));
   const setC = (key, raw) => setCfg((x) => ({ ...x, constellation: { ...x.constellation, [key]: toNumber(raw) } }));
