@@ -1,6 +1,7 @@
 import math
 from dataclasses import replace
 from datetime import datetime, timezone
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -8,7 +9,7 @@ from .constants import MU_EARTH, R_EARTH
 from .constellation import Constellation, WalkerConfig
 from .frames import datetime_to_jd
 from .ground import DEFAULT_STATIONS, GroundStation
-from .links import LinkModel, LinkParams, validate_link_overrides
+from .links import LinkModel, LinkParams, IslPolicy, validate_link_overrides
 from .routing import DEFAULT_FLOW_GBPS
 from .tle import TleShell, parse_tle_text
 
@@ -48,6 +49,11 @@ def _parse_epoch(value: str) -> datetime:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
 
+class IslConfig(BaseModel):
+    mode: Literal["auto", "grid", "nearest", "none"] = "auto"
+    max_degree: int = Field(4, ge=1, le=8)               # links per satellite (nearest mode)
+    inter_shell_degree: int = Field(0, ge=0, le=2)       # extra links per satellite to other Walker shells
+    replan_s: float = Field(300.0, ge=0, le=3600)        # nearest-neighbour links are planned this often
 
 class ScenarioConfig(BaseModel):
     constellation: ConstellationConfig | None = Field(default_factory=ConstellationConfig)   # Walker shell 1
@@ -56,6 +62,7 @@ class ScenarioConfig(BaseModel):
     epoch: str | None = None                      # ISO 8601; time 0 of the simulation (needed for real orbits)
     stations: list[StationConfig] = Field(default_factory=_default_stations, min_length=2, max_length=20)
     link_params: dict[str, float] = Field(default_factory=dict)
+    isl: IslConfig = Field(default_factory=IslConfig)
     flow_demand_gbps: float = Field(DEFAULT_FLOW_GBPS, gt=0, le=10)
 
     @field_validator("epoch")
@@ -118,7 +125,8 @@ def build_world(cfg: ScenarioConfig, load_tle=None) -> LinkModel:
         raise ValueError(f"at most {MAX_SATELLITES} satellites in total (this scenario has {constellation.n_sats})")
 
     stations = [GroundStation(s.name.strip(), s.lat, s.lon) for s in cfg.stations]
-    return LinkModel(constellation, stations, replace(LinkParams(), **cfg.link_params))
+    return LinkModel(constellation, stations, replace(LinkParams(), **cfg.link_params),
+                     IslPolicy(**cfg.isl.model_dump()))
 
 
 def _footprint(altitude_km: float, params: LinkParams) -> float:

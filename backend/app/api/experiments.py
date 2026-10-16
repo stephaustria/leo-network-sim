@@ -119,6 +119,10 @@ def create_experiment(req: ExperimentRequest, background: BackgroundTasks,
         db.rollback()
         raise HTTPException(422, detail=json.loads(exc.json()))
 
+    if req.preset != "none" and not req.failures and not failures:
+        raise HTTPException(422, f"preset {req.preset!r} produces no failures in this scenario "
+                                 "(seam cuts need grid ISLs)")
+
     db.commit()
     for run in runs:                       # background tasks run one after another
         background.add_task(execute_run, run.id, session_factory)

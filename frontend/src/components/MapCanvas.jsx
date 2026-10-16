@@ -83,7 +83,7 @@ function drawFrame(ctx, init, frame, selectedFlow) {
 
   // 1. faint ISL mesh (links touching failed satellites or failed links are hidden)
   ctx.beginPath();
-  for (const [a, b] of init.isl_pairs) {
+  for (const [a, b] of frame.isl ?? init.isl_pairs) {
     if (downSats.has(a) || downSats.has(b) || downIsls.has(pairKey(a, b))) continue;
     addSegment(ctx, sats[a], sats[b]);
   }

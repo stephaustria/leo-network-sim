@@ -1,6 +1,9 @@
 from dataclasses import dataclass, replace
 
+
 import numpy as np
+import math
+import threading
 
 from .constants import C_LIGHT
 from .constellation import Constellation
@@ -33,17 +36,21 @@ class IslPolicy:
     """How inter-satellite links are chosen.
     auto: +Grid inside Walker shells, nearest-neighbour for TLE shells.
     grid: +Grid inside Walker shells only (TLE shells get none).
-    nearest: nearest-neighbour links in every shell, recomputed every tick.
-    none: no ISLs at all (stations can only use a satellite they both see)."""
+    nearest: nearest-neighbour links in every shell.
+    none: no ISLs at all (stations can only use a satellite they both see).
+
+    Nearest-neighbour links are planned at the start of every `replan_s` interval and held
+    for as long as they stay valid (0 = re-plan every tick)."""
     mode: str = "auto"
     max_degree: int = 4               # links per satellite inside a shell (nearest mode)
     inter_shell_degree: int = 0       # extra links per satellite to other Walker shells
+    replan_s: float = 300.0
 
     def __post_init__(self):
         if self.mode not in ISL_MODES:
             raise ValueError(f"isl mode must be one of {ISL_MODES}, got {self.mode!r}")
-        if self.max_degree < 1 or self.inter_shell_degree < 0:
-            raise ValueError("max_degree must be >= 1 and inter_shell_degree >= 0")
+        if self.max_degree < 1 or self.inter_shell_degree < 0 or self.replan_s < 0:
+            raise ValueError("max_degree must be >= 1; inter_shell_degree and replan_s must be >= 0")
 
 
 @dataclass
@@ -142,45 +149,64 @@ class LinkModel:
             if isl.inter_shell_degree > 0 and isl.mode != "none" else []
         )
         self.isl_dynamic = bool(self.dynamic_shells or self.inter_pairs)    # topology changes over time
+        self._plans: dict[float, tuple] = {}
+        self._plan_lock = threading.Lock()
 
     def snapshot(self, t: float) -> LinkSnapshot:
         sat = self.c.positions_ecef(t)
-        isl, n_candidates = self._isl(sat)
+        isl, n_candidates = self._isl(sat, t)
         return LinkSnapshot(t=t, n_isl_candidates=n_candidates, isl=isl, ground=self._ground(sat))
 
-    def _dynamic(self, sat: np.ndarray):
-        """Nearest-neighbour and inter-shell links for these positions: (a, b, kind) arrays."""
+    def _plan(self, t: float, sat: np.ndarray):
+        """Planned nearest-neighbour and inter-shell links for the replan interval containing t:
+        (a, b, kind) arrays. A pure function of t (cached), so live runs and replays agree."""
+        rs = self.isl.replan_s
+        t_plan = t if rs <= 0 else math.floor(t / rs) * rs
+        key = round(t_plan, 3)
+        with self._plan_lock:
+            plan = self._plans.get(key)
+        if plan is not None:
+            return plan
+
+        sat_plan = sat if t_plan == t else self.c.positions_ecef(t_plan)
         p = self.params
         range_m, margin_m = p.max_isl_range_km * 1000.0, p.grazing_margin_km * 1000.0
         a_parts, b_parts, k_parts = [], [], []
 
         for shell in self.dynamic_shells:
             lo, hi = shell.offset, shell.offset + shell.n_sats
-            a, b = nearest_links(sat[lo:hi], self.isl.max_degree, range_m, margin_m)
+            a, b = nearest_links(sat_plan[lo:hi], self.isl.max_degree, range_m, margin_m)
             a_parts.append(a + lo)
             b_parts.append(b + lo)
             k_parts.append(np.full(len(a), KIND_NEAR))
 
         for sa, sb in self.inter_pairs:
             a, b = inter_shell_links(
-                sat[sa.offset:sa.offset + sa.n_sats], sat[sb.offset:sb.offset + sb.n_sats],
+                sat_plan[sa.offset:sa.offset + sa.n_sats], sat_plan[sb.offset:sb.offset + sb.n_sats],
                 self.isl.inter_shell_degree, range_m, margin_m)
             a_parts.append(a + sa.offset)
             b_parts.append(b + sb.offset)
             k_parts.append(np.full(len(a), KIND_SHELL))
 
-        return np.concatenate(a_parts), np.concatenate(b_parts), np.concatenate(k_parts)
+        plan = (np.concatenate(a_parts), np.concatenate(b_parts), np.concatenate(k_parts))
+        with self._plan_lock:
+            self._plans[key] = plan
+            while len(self._plans) > 8:
+                self._plans.pop(next(iter(self._plans)))
+        return plan
 
-    def _isl(self, sat: np.ndarray):
+    def _isl(self, sat: np.ndarray, t: float):
         p = self.params
         a, b = self.pairs[:, 0], self.pairs[:, 1]
         kind = np.where(self.is_cross, KIND_CROSS, KIND_INTRA)
         if self.isl_dynamic:
-            da, db, dk = self._dynamic(sat)
+            da, db, dk = self._plan(t, sat)
             a, b, kind = np.concatenate([a, da]), np.concatenate([b, db]), np.concatenate([kind, dk])
         kind = kind.astype(np.int8)
         n_candidates = len(a)
 
+        # planned links are checked against the CURRENT geometry: a link that has gone out of
+        # range or behind the Earth since the plan was made is dropped
         pa, pb = sat[a], sat[b]
         dist = np.linalg.norm(pb - pa, axis=1)
         ok = (dist <= p.max_isl_range_km * 1000) & clear_of_earth(pa, pb, p.grazing_margin_km * 1000)

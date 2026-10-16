@@ -13,7 +13,7 @@ from app.api.runs import to_dict
 from app.db.models import FlowSample, HandoffRecord, LinkSample, SimulationRun, TickMetric
 from app.db.session import get_session_factory
 from app.sim.engine import Simulation
-from app.sim.failures import FailureSchedule
+from app.sim.failures import FailureSchedule, apply_failures
 from app.sim.presets import live_failure_events
 from app.sim.routing import POLICIES, TrafficParams
 from app.sim.serving import DEFAULT_HYSTERESIS_DEG
@@ -299,13 +299,20 @@ def load_replay_frame(session_factory, run_id: int, t: float, idx: int, n: int,
             LinkSample.run_id == run_id, LinkSample.t == t))
         handoffs = db.scalars(select(HandoffRecord).where(
             HandoffRecord.run_id == run_id, HandoffRecord.t == t))
+
+        state = schedule.active_at(t, model.c)
+        isl = None
+        if model.isl_dynamic:                      # recompute the ISL topology at this time
+            snap = apply_failures(model.snapshot(t), state, model.c.n_sats)
+            isl = [[int(x), int(y)] for x, y in zip(snap.isl.a, snap.isl.b)]
+
         return build_frame(
             t=t, mode="replay", sats=sat_latlon(model.c, t),
             links=[to_dict(l, ("id", "run_id", "t")) for l in links],
             flows=[to_dict(f, ("id", "run_id", "t")) for f in flows],
             handoffs=[to_dict(h, ("id", "run_id")) for h in handoffs],
             metrics=to_dict(metrics), progress={"tick": idx, "of": n},
-            failures=schedule.active_at(t, model.c).to_dict(),
+            failures=state.to_dict(), isl=isl,
         )
 
 
