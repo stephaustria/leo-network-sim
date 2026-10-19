@@ -21,6 +21,9 @@ A simulator for a LEO satellite constellation **acting as a communications netwo
 - **Experiments:** run several policy arms on identical conditions (failure presets, load, link capacities) and compare goodput, latency, route stability, handoffs and recovery time in charts and a summary table
 - **Scenarios:** save named scenarios (Walker constellation, ground stations, link parameters, flow demand), edit them in the UI with a live analytic summary, and select one for live runs, stored runs and experiments (every run keeps its own snapshot of the scenario it used)
 - **Coverage analysis:** heatmaps of availability, satellites in view, access latency and longest outage over the globe, with a latitude profile and per-station statistics, for any saved or unsaved scenario
+- **Real constellations:** import TLE sets (paste, or fetch a CelesTrak group such as `starlink` or `iridium-NEXT`) and propagate them with SGP4, with Earth orientation from real sidereal time at a chosen epoch
+- **Multi-shell scenarios:** combine several Walker shells and/or TLE shells in one scenario, with per-shell colors on the map
+- **Inter-satellite link policies:** +Grid, nearest-neighbour (planned every N seconds and held while valid), optional links between shells, or none, so you can measure what the ISL mesh is worth
 
 ## Architecture
 
@@ -109,6 +112,7 @@ alembic check                                         # fails if models and migr
 | `GET/POST /scenarios`, `GET/PUT/DELETE /scenarios/{id}`, `GET /scenarios/default`, `POST /scenarios/preview` | Saved scenarios (constellation, stations, link parameters) with validation and analytic summaries |
 | `GET /coverage`, `POST /coverage/preview` | Coverage heatmap data for a saved scenario (`?scenario_id=`) or any unsaved config |
 | `scenario_id` parameter | Accepted by REST endpoints, `POST /runs`, `POST /experiments`, and `/ws/live?scenario_id=` |
+| `GET/POST /tle-sets`, `POST /tle-sets/fetch`, `GET /tle-sets/{id}` | Immutable TLE sets (pasted or fetched from CelesTrak, with fetch throttling) |
 
 ## Model assumptions
 
@@ -122,6 +126,11 @@ alembic check                                         # fails if models and migr
 - `route_changes` counts mid-path route changes only; path changes caused by a ground handoff are tracked separately through the `handoffs` metric
 - Each handoff adds a 2% loss burst on the new ground link for one tick, so handoff hysteresis directly affects goodput. Conclusions about the best hysteresis depend on that assumption
 - Goodput is delivered / offered traffic, counting unreachable flows as lost
+- TLE satellites are propagated with SGP4 in the TEME frame and rotated to Earth-fixed with GMST (UT1 approximated by UTC; no polar motion or nutation). Accuracy is best within days of the TLE epoch
+- Satellites SGP4 cannot propagate (decayed, bad elements) are dropped when the scenario is built
+- The Earth is a sphere of radius 6,371 km, so altitudes derived from TLEs are relative to the mean radius
+- Nearest-neighbour ISLs are a greedy, degree-capped matching, planned at the start of every replan interval and held while range and line of sight allow. Re-acquiring a link costs nothing in this model, so churn figures are best read as relative, not absolute
+- TLE satellites are only linked to satellites of the same TLE set, and inter-shell links exist between Walker shells only
 
 ## Project structure
 

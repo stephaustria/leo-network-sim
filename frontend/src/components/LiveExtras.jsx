@@ -48,11 +48,15 @@ export function PolicyControls({ send, serverState }) {
 }
 
 export function FailurePanel({ init, frame, send, started }) {
-  const [kind, setKind] = useState("plane");
+  const [wanted, setWanted] = useState("plane");
   const [target, setTarget] = useState(5);
   const [duration, setDuration] = useState(0);
 
   const c = init?.constellation;
+  const hasPlanes = (c?.planes ?? 0) > 0;
+  const kinds = KINDS.filter(([v]) => hasPlanes || (v !== "plane" && v !== "seam"));
+  const kind = kinds.some(([v]) => v === wanted) ? wanted : kinds[0][0];
+
   const max = {
     satellite: (c?.n_sats ?? 1) - 1,
     plane: (c?.planes ?? 1) - 1,
@@ -71,8 +75,8 @@ export function FailurePanel({ init, frame, send, started }) {
       <h3>Failure injection</h3>
       <label>
         What fails
-        <select value={kind} onChange={(e) => { setKind(e.target.value); setTarget(0); }}>
-          {KINDS.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+        <select value={kind} onChange={(e) => { setWanted(e.target.value); setTarget(0); }}>
+          {kinds.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
         </select>
       </label>
 

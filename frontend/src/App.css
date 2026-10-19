@@ -104,3 +104,18 @@ button.active { background: #2f5dd1; border-color: #2f5dd1; }
 .summary-box { background: #131d31; border-radius: 8px; padding: 8px 10px; margin-top: 10px; }
 .summary-grid { display: grid; grid-template-columns: 1fr auto; gap: 3px 12px; font-size: 12px; }
 .summary-grid span { color: #7d8ba1; }
+
+.shell-box { background: #131d31; border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; }
+.shell-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-size: 13px; }
+.shell-line { font-size: 12px; margin-top: 4px; }
+.shell-line .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+
+.tle-list { margin-top: 10px; max-height: 220px; overflow-y: auto; }
+.tle-row { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; align-items: center;
+  font-size: 12px; padding: 6px 0; border-top: 1px solid #1a2438; }
+
+textarea {
+  background: #18233a; color: #e6edf7; border: 1px solid #2c4160; border-radius: 6px;
+  padding: 6px 8px; font-size: 12px; width: 100%; min-width: 0; resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}

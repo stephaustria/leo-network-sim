@@ -7,6 +7,8 @@ import HeatLegend from "./HeatLegend";
 import MapCanvas from "./MapCanvas";
 import ScenarioEditor from "./ScenarioEditor";
 import { HEAT_METRICS, makeHeatmap } from "./heat";
+import { useTleSets } from "../hooks/useTleSets";
+import TleSetsPanel from "./TleSetsPanel";
 
 const RESOLUTIONS = [10, 5, 3, 2];
 const WINDOWS = [6, 12, 24];
@@ -25,6 +27,7 @@ export default function ScenariosTab({ scenarios, activeScenarioId, onUse, onDel
   const [params, setParams] = useState({ res_deg: 5, window_hours: 12, step_s: 180 });
   const [coveredKey, setCoveredKey] = useState(null);
   const coverage = useCoverage();
+  const tle = useTleSets();
   const { defaultScenario, load } = scenarios;
 
   // load the selected scenario into the editor
@@ -111,6 +114,16 @@ export default function ScenariosTab({ scenarios, activeScenarioId, onUse, onDel
   const s = coverage.data?.summary;
   const metricDef = HEAT_METRICS.find((m) => m.key === metric);
   const inUse = (selected === "default" ? null : selected) === activeScenarioId;
+
+  const addTleShell = (setId) =>
+    setDraft((d) => d && ({
+      ...d,
+      config: {
+        ...d.config,
+        tle_shells: [...(d.config.tle_shells ?? []),
+          { tle_set_id: setId, limit: null, name_contains: null }].slice(0, 3),
+      },
+    }));
 
   return (
     <main>
@@ -203,8 +216,10 @@ export default function ScenariosTab({ scenarios, activeScenarioId, onUse, onDel
           <div className="hint">Computes for the scenario as currently edited, saved or not.</div>
         </div>
 
+        <TleSetsPanel tle={tle} onAddToScenario={addTleShell} />
+
         <ScenarioEditor
-          draft={draft} setDraft={setDraft} preview={preview}
+          draft={draft} setDraft={setDraft} preview={preview} tleSets={tle.list}
           isSaved={isSaved} isDefault={!isSaved} saving={saving} error={saveError}
           addMode={addMode} setAddMode={setAddMode}
           onSave={() => save(false)} onSaveNew={() => save(true)} onDelete={remove}

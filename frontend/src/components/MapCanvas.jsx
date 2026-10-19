@@ -4,6 +4,7 @@ import { feature } from "topojson-client";
 import land from "world-atlas/land-110m.json";
 import { rampColor } from "./heat";
 import { utilColor } from "../utils";
+import { SHELL_COLORS, shellLabel } from "./shells";
 
 const W = 1200;
 const H = 600;
@@ -139,14 +140,20 @@ function drawFrame(ctx, init, frame, selectedFlow) {
   const serving = new Set(frame.ground_links.map((g) => g.sat));
   const onPath = new Set((path ?? []).filter((id) => id[0] === "S").map((id) => +id.slice(1)));
 
-  ctx.beginPath();
-  sats.forEach((p, i) => {
-    if (serving.has(i) || onPath.has(i) || downSats.has(i)) return;
-    ctx.moveTo(p[0] + 1.6, p[1]);
-    ctx.arc(p[0], p[1], 1.6, 0, 2 * Math.PI);
+  const shells = init.constellation?.shells?.length
+    ? init.constellation.shells
+    : [{ offset: 0, n_sats: sats.length }];
+  shells.forEach((shell, si) => {
+    ctx.beginPath();
+    for (let i = shell.offset; i < shell.offset + shell.n_sats; i++) {
+      if (serving.has(i) || onPath.has(i) || downSats.has(i)) continue;
+      const p = sats[i];
+      ctx.moveTo(p[0] + 1.6, p[1]);
+      ctx.arc(p[0], p[1], 1.6, 0, 2 * Math.PI);
+    }
+    ctx.fillStyle = SHELL_COLORS[si % SHELL_COLORS.length];
+    ctx.fill();
   });
-  ctx.fillStyle = "#7aa2f7";
-  ctx.fill();
 
   for (const [set, color, r] of [[serving, "#ffd166", 3.2], [onPath, "#ffffff", 3.8]]) {
     ctx.beginPath();
@@ -197,6 +204,7 @@ export default function MapCanvas({
   const heatRef = useRef(null);
   const overlayRef = useRef(null);
   const stationList = stations ?? init?.stations ?? EMPTY;
+  const shells = init?.constellation?.shells ?? EMPTY;
 
   // static layer: drawn once
   useEffect(() => {
@@ -259,7 +267,15 @@ export default function MapCanvas({
       <canvas ref={heatRef} width={W} height={H} />
       <canvas ref={overlayRef} width={W} height={H} />
       <div className="legend">
-        <span className="dot" style={{ background: "#7aa2f7" }} /> satellite
+        {shells.length > 1 ? (
+          shells.map((s) => (
+            <span key={s.index}>
+              <span className="dot" style={{ background: SHELL_COLORS[s.index % SHELL_COLORS.length] }} /> {shellLabel(s)}
+            </span>
+          ))
+        ) : (
+          <><span className="dot" style={{ background: SHELL_COLORS[0] }} /> satellite</>
+        )}
         <span className="dot" style={{ background: "#ffd166" }} /> serving
         <span className="dot" style={{ background: "#ff6b6b" }} /> station
         <span className="dot" style={{ background: "#fff" }} /> selected route
