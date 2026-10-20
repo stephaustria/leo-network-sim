@@ -24,9 +24,13 @@ def links_from_graph(G) -> list[dict]:
         if d["kind"] == "ground" or d["load_gbps"] > 0
     ]
 
+def isl_pairs_from_graph(G) -> list[list[int]]:
+    """Active inter-satellite links of a graph as [sat_a, sat_b] index pairs."""
+    return [[int(u[1:]), int(v[1:])] for u, v, d in G.edges(data=True) if d["kind"].startswith("isl")]
+
 
 def build_frame(*, t, mode, sats, links, flows, handoffs, metrics, progress=None,
-                failures=None) -> dict:
+                failures=None, isl=None) -> dict:
     ground, loaded = [], []
     for l in links:
         if l["kind"] == "ground":
@@ -40,10 +44,13 @@ def build_frame(*, t, mode, sats, links, flows, handoffs, metrics, progress=None
                            "utilization": _r(l["utilization"]),
                            "queue_ms": _r(l["queue_ms"]),
                            "loss": _r(l["loss_eff"], 5)})
-    return {"type": "frame", "t": t, "mode": mode, "progress": progress,
-            "sats": sats, "ground_links": ground, "loaded_links": loaded,
-            "flows": flows, "handoffs": handoffs, "metrics": metrics,
-            "failures": failures or {"sats": [], "stations": [], "isls": []}}
+    frame = {"type": "frame", "t": t, "mode": mode, "progress": progress,
+             "sats": sats, "ground_links": ground, "loaded_links": loaded,
+             "flows": flows, "handoffs": handoffs, "metrics": metrics,
+             "failures": failures or {"sats": [], "stations": [], "isls": []}}
+    if isl is not None:                    # only when the ISL topology changes over time
+        frame["isl"] = isl
+    return frame
 
 
 def live_frame(model, res, progress=None) -> dict:
@@ -53,22 +60,29 @@ def live_frame(model, res, progress=None) -> dict:
         handoffs=[e.to_dict() for e in res.handoffs], metrics=res.metrics,
         progress=progress,
         failures=res.failures.to_dict() if res.failures else None,
+        isl=isl_pairs_from_graph(res.graph) if model.isl_dynamic else None,
     )
 
-
 def init_message(model, flows, scenario=None) -> dict:
-    cfg = model.c.cfg
+    c = model.c
+    shells = [s.summary() for s in c.shells]
+    first = shells[0]
     return {
         "type": "init",
         "scenario": {"id": scenario["id"], "name": scenario["name"]} if scenario else None,
         "constellation": {
-            "n_sats": model.c.n_sats, "planes": cfg.planes,
-            "sats_per_plane": cfg.sats_per_plane, "altitude_km": cfg.altitude_km,
-            "inclination_deg": cfg.inclination_deg,
-            "period_min": round(float(model.c.period_s) / 60, 2),
+            "n_sats": c.n_sats,
+            "planes": c.n_planes,                     # total planes across Walker shells
+            "sats_per_plane": first["sats_per_plane"],
+            "altitude_km": first["altitude_km"],      # the top-level fields describe the first shell
+            "inclination_deg": first["inclination_deg"],
+            "period_min": first["period_min"],
+            "epoch": c.epoch.isoformat() if c.epoch else None,
+            "shells": shells,
         },
         "stations": [{"id": i, "name": s.name, "lat": s.lat, "lon": s.lon}
                      for i, s in enumerate(model.stations)],
         "isl_pairs": model.pairs.tolist(),
+        "isl_dynamic": bool(model.isl_dynamic),        
         "flows": [{"src": f.src, "dst": f.dst, "demand_gbps": f.demand_gbps} for f in flows],
     }

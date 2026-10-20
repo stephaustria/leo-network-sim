@@ -90,8 +90,11 @@ def create_experiment(req: ExperimentRequest, background: BackgroundTasks,
                       session_factory: Callable = Depends(get_session_factory)):
     snapshot = scenario_snapshot(db, req.scenario_id)               # 404 if missing
     model = world_for_params({"scenario": snapshot}).model
-    failures = req.failures or preset_failures(
-        req.preset, req.t_start, req.duration, req.dt, model.c, model.pairs)
+    try:
+        failures = req.failures or preset_failures(
+            req.preset, req.t_start, req.duration, req.dt, model.c, model.pairs)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
     exp_id = uuid.uuid4().hex[:12]
 
     runs = []
@@ -115,6 +118,10 @@ def create_experiment(req: ExperimentRequest, background: BackgroundTasks,
     except ValidationError as exc:
         db.rollback()
         raise HTTPException(422, detail=json.loads(exc.json()))
+
+    if req.preset != "none" and not req.failures and not failures:
+        raise HTTPException(422, f"preset {req.preset!r} produces no failures in this scenario "
+                                 "(seam cuts need grid ISLs)")
 
     db.commit()
     for run in runs:                       # background tasks run one after another

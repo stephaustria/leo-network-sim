@@ -14,6 +14,8 @@ def _window(t_start: float, duration: float, dt: float) -> tuple[float, float]:
 
 def preset_failures(preset: str, t_start: float, duration: float, dt: float, c, pairs) -> list[dict]:
     """Failure events (as dicts) for a named scenario. `pairs` is LinkModel.pairs."""
+    if preset in ("plane_outage", "adjacent_planes", "plane_seam_cut") and c.n_planes < 3:
+        raise ValueError("this scenario has fewer than 3 orbital planes (TLE satellites have no planes)")
     if preset == "none":
         return []
     t0, t1 = _window(t_start, duration, dt)
@@ -23,7 +25,7 @@ def preset_failures(preset: str, t_start: float, duration: float, dt: float, c, 
     if preset == "plane_outage":
         return [{"kind": "plane", "target": min(5, c.n_planes - 1), **window}]
     if preset == "adjacent_planes":
-        return [{"kind": "plane", "target": q, **window} for q in (p, p + 1)]
+        return [{"kind": "plane", "target": q, **window} for q in (p, c.next_plane(p))]
     if preset == "station_loss":
         return [{"kind": "station", "target": 0, **window}]
     if preset == "plane_seam_cut":
@@ -32,8 +34,12 @@ def preset_failures(preset: str, t_start: float, duration: float, dt: float, c, 
     raise ValueError(f"unknown preset {preset!r}; choose from {PRESETS}")
 
 def seam_cut(c, pairs, p: int, t_start: float, t_end: float | None = None) -> list[dict]:
-    """ISL failure events for every cross-plane link between plane p and plane p+1."""
-    planes = {p % c.n_planes, (p + 1) % c.n_planes}
+    """ISL failure events for every cross-plane link between plane p and its neighbour
+    in the same shell (the last plane of a shell is adjacent to the first)."""
+    if c.n_planes == 0:
+        return []
+    p = p % c.n_planes
+    planes = {p, c.next_plane(p)}
     return [{"kind": "isl", "target": [int(a), int(b)], "t_start": t_start, "t_end": t_end}
             for a, b in pairs
             if {int(c.plane[a]), int(c.plane[b])} == planes]

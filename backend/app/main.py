@@ -8,8 +8,13 @@ from app.api.links import router as links_router
 from app.api.runs import router as runs_router
 from app.api.scenarios import router as scenarios_router
 from app.api.simulation import router as simulation_router
+from app.api.tle import router as tle_router
 from app.api.topology import router as topology_router
 from app.api.ws import router as ws_router
+from app.db.tle_store import load_tle_text
+from app.sim import worlds
+
+worlds.set_tle_loader(load_tle_text)     # scenarios read TLE sets from the database
 
 app = FastAPI(title="LEO Network Simulator")
 app.add_middleware(
@@ -19,13 +24,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(constellation_router)
-app.include_router(coverage_router)
 app.include_router(links_router)
 app.include_router(topology_router)
 app.include_router(simulation_router)
 app.include_router(runs_router)
 app.include_router(experiments_router)
 app.include_router(scenarios_router)
+app.include_router(coverage_router)
+app.include_router(tle_router)
 app.include_router(ws_router)
 
 

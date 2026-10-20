@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 import networkx as nx
 
 from .frames import ecef_to_latlon_alt
-from .links import LinkModel
+from .links import ISL_KIND_NAMES, LinkModel
 
 
 def sat_node(i) -> str:
@@ -35,6 +35,7 @@ def build_graph(model: LinkModel, t: float, snap=None, serving: dict | None = No
     G = nx.Graph(t=t)
     for i in range(c.n_sats):
         G.add_node(sat_node(i), kind="sat", plane=int(c.plane[i]), slot=int(c.slot[i]),
+                   shell=int(c.shell_of[i]),
                    lat=float(lat[i]), lon=float(lon[i]), alt_km=float(alt[i]) / 1000)
     for i, st in enumerate(model.stations):
         G.add_node(gs_node(i), kind="ground", name=st.name, lat=st.lat, lon=st.lon)
@@ -43,7 +44,7 @@ def build_graph(model: LinkModel, t: float, snap=None, serving: dict | None = No
     for k in range(len(isl.a)):
         G.add_edge(
             sat_node(isl.a[k]), sat_node(isl.b[k]),
-            kind="isl_cross" if isl.cross_plane[k] else "isl_intra",
+            kind=ISL_KIND_NAMES[int(isl.kind[k])],
             distance_km=float(isl.distance_km[k]),
             latency_ms=float(isl.latency_ms[k]),
             capacity_gbps=float(isl.capacity_gbps[k]),

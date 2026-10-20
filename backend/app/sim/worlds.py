@@ -1,10 +1,14 @@
 import json
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import Callable
 
 from .links import LinkModel, with_overrides
 from .routing import Flow, default_flows
 from .scenario import ScenarioConfig, build_world
+
+TleLoader = Callable[[int], str]
+_tle_loader: TleLoader | None = None
 
 
 @dataclass(frozen=True)
@@ -20,7 +24,15 @@ class World:
 @lru_cache(maxsize=8)
 def _build(config_json: str) -> World:
     cfg = ScenarioConfig.model_validate_json(config_json)
-    return World(build_world(cfg), cfg.flow_demand_gbps, cfg)
+    return World(build_world(cfg, _tle_loader), cfg.flow_demand_gbps, cfg)
+
+
+def set_tle_loader(loader: TleLoader | None) -> None:
+    """Where scenarios find TLE text. Clears cached worlds, which may have used another source.
+    TLE sets are immutable, so the cache is safe otherwise."""
+    global _tle_loader
+    _tle_loader = loader
+    _build.cache_clear()
 
 
 def get_world(cfg: ScenarioConfig) -> World:

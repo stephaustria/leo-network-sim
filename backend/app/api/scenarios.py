@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.db.models import Scenario
 from app.db.session import get_db
 from app.sim.scenario import DEFAULT_SCENARIO_NAME, ScenarioConfig, describe
+from app.sim.worlds import World, get_world
 
 router = APIRouter(prefix="/scenarios", tags=["scenarios"])
 
@@ -25,17 +26,32 @@ class PreviewIn(BaseModel):
     config: ScenarioConfig = Field(default_factory=ScenarioConfig)
 
 
+def _world_or_422(cfg: ScenarioConfig) -> World | None:
+    """Scenarios that use TLE data are built here, which checks the sets exist and the filters match."""
+    if not cfg.tle_shells:
+        return None
+    try:
+        return get_world(cfg)
+    except ValueError as exc:                        # includes TleError
+        raise HTTPException(422, str(exc))
+
+
 def _brief(s: Scenario) -> dict:
     cfg = ScenarioConfig.model_validate(s.config)
+    n_sats = cfg.total_sats()
+    if cfg.tle_shells:
+        try:
+            n_sats = get_world(cfg).model.c.n_sats
+        except ValueError:
+            pass
     return {"id": s.id, "name": s.name, "description": s.description,
             "created_at": s.created_at, "updated_at": s.updated_at,
-            "n_sats": cfg.constellation.planes * cfg.constellation.sats_per_plane,
-            "n_stations": len(cfg.stations)}
+            "n_sats": n_sats, "n_stations": len(cfg.stations)}
 
 
 def _full(s: Scenario) -> dict:
     cfg = ScenarioConfig.model_validate(s.config)
-    return {**_brief(s), "config": cfg.model_dump(), "summary": describe(cfg)}
+    return {**_brief(s), "config": cfg.model_dump(), "summary": describe(cfg, _world_or_422(cfg))}
 
 
 def _get_or_404(db: Session, scenario_id: int) -> Scenario:
@@ -56,7 +72,7 @@ def default_scenario():
 
 @router.post("/preview")
 def preview(req: PreviewIn):
-    return {"valid": True, "summary": describe(req.config)}
+    return {"valid": True, "summary": describe(req.config, _world_or_422(req.config))}
 
 
 @router.get("")
@@ -68,6 +84,7 @@ def list_scenarios(db: Session = Depends(get_db)):
 def create_scenario(req: ScenarioIn, db: Session = Depends(get_db)):
     if db.scalar(select(Scenario.id).where(Scenario.name == req.name)) is not None:
         raise HTTPException(409, "a scenario with that name already exists")
+    _world_or_422(req.config)
     row = Scenario(name=req.name, description=req.description, config=req.config.model_dump())
     db.add(row)
     try:
@@ -90,6 +107,7 @@ def update_scenario(scenario_id: int, req: ScenarioIn, db: Session = Depends(get
     clash = db.scalar(select(Scenario.id).where(Scenario.name == req.name, Scenario.id != scenario_id))
     if clash is not None:
         raise HTTPException(409, "a scenario with that name already exists")
+    _world_or_422(req.config)
     row.name, row.description, row.config = req.name, req.description, req.config.model_dump()
     try:
         db.commit()

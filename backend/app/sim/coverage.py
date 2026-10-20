@@ -52,13 +52,20 @@ def grid_points(res_deg: float):
     lat, lon = np.meshgrid(lat_c, lon_c, indexing="ij")
     return lat_c, lon_c, lat.ravel(), lon.ravel()
 
+def _half_angle(R: float, r, el: float):
+    """Earth-central half-angle of a satellite's footprint at minimum elevation `el`.
+    `r` may be a scalar or an array (one radius per satellite)."""
+    return np.pi / 2 - el - np.arcsin(R * np.cos(el) / r)
+
 
 def coverage_at_points(model, lat_deg, lon_deg, step_s: float, samples: int) -> PointCoverage:
     c = model.c
-    R, r = R_EARTH, c.radius
+    R = R_EARTH
     el = np.radians(model.params.min_elevation_deg)
-    lam = np.pi / 2 - el - np.arcsin(R * np.cos(el) / r)       # footprint half-angle
-    cos_lam = np.float32(np.cos(lam))
+
+    uniform = [(s.offset, s.offset + s.n_sats, s.radius, np.float32(np.cos(_half_angle(R, s.radius, el))))
+               for s in c.shells if s.uniform_radius]
+    variable = [(s.offset, s.offset + s.n_sats) for s in c.shells if not s.uniform_radius]
 
     lat, lon = np.radians(lat_deg), np.radians(lon_deg)
     unit = np.column_stack([np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)])
@@ -72,23 +79,43 @@ def coverage_at_points(model, lat_deg, lon_deg, step_s: float, samples: int) -> 
     latency = np.full((samples, P), np.nan, dtype=np.float32)
 
     for k in range(samples):
-        sat = (c.positions_ecef(k * step_s) / r).astype(np.float32)      # unit vectors, all radius r
-        n_vis = np.empty(P, dtype=np.int64)
-        best = np.empty(P, dtype=np.float32)
-        for s in range(0, P, CHUNK):
-            dots = unit[s:s + CHUNK] @ sat.T                              # cos of central angle
-            n_vis[s:s + CHUNK] = (dots >= cos_lam).sum(axis=1)
-            best[s:s + CHUNK] = dots.max(axis=1)
+        sat_all = c.positions_ecef(k * step_s)
+        n_vis = np.zeros(P, dtype=np.int64)
+        nearest = np.full(P, np.inf)                       # slant range to the nearest visible satellite
+
+        for lo, hi, r, cos_lam in uniform:                 # Walker shells: one altitude each
+            sat = (sat_all[lo:hi] / r).astype(np.float32)               # unit vectors, all radius r
+            for s in range(0, P, CHUNK):
+                dots = unit[s:s + CHUNK] @ sat.T                         # cos of central angle
+                n_vis[s:s + CHUNK] += (dots >= cos_lam).sum(axis=1)
+                best = dots.max(axis=1).astype(np.float64)
+                d = np.sqrt(np.maximum(R * R + r * r - 2 * R * r * best, 0.0))
+                d = np.where(best >= cos_lam, d, np.inf)                 # only if visible
+                view = nearest[s:s + CHUNK]
+                np.minimum(view, d, out=view)
+
+        for lo, hi in variable:                            # TLE shells: every satellite has its own radius
+            pos = sat_all[lo:hi]
+            r_i = np.linalg.norm(pos, axis=1)
+            sat = (pos / r_i[:, None]).astype(np.float32)
+            cos_i = np.cos(_half_angle(R, r_i, el)).astype(np.float32)
+            gap = ((r_i - R) ** 2).astype(np.float32)                    # (r - R)^2
+            k2 = (2.0 * R * r_i).astype(np.float32)                      # 2 R r
+            for s in range(0, P, CHUNK):
+                dots = unit[s:s + CHUNK] @ sat.T
+                vis = dots >= cos_i
+                n_vis[s:s + CHUNK] += vis.sum(axis=1)
+                d2 = gap + k2 * (1.0 - dots)                             # d^2 without cancellation
+                d = np.sqrt(np.where(vis, d2, np.inf).min(axis=1))
+                view = nearest[s:s + CHUNK]
+                np.minimum(view, d, out=view)
 
         ok = n_vis > 0
         visible_sum += n_vis
         covered_count += ok
         run = np.where(ok, 0, run + 1)
         np.maximum(max_run, run, out=max_run)
-
-        # slant range to the nearest satellite, in float64 to avoid cancellation
-        d = np.sqrt(np.maximum(R * R + r * r - 2 * R * r * best.astype(np.float64), 0.0))
-        latency[k, ok] = (d[ok] / C_LIGHT * 1000.0).astype(np.float32)
+        latency[k, ok] = (nearest[ok] / C_LIGHT * 1000.0).astype(np.float32)
 
     with np.errstate(all="ignore"), warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
@@ -102,7 +129,6 @@ def coverage_at_points(model, lat_deg, lon_deg, step_s: float, samples: int) -> 
         p95_latency_ms=p95_ms,
         longest_gap_s=max_run * step_s,
     )
-
 
 def _clean(arr, ndigits: int) -> list:
     return [round(float(x), ndigits) if np.isfinite(x) else None for x in arr]

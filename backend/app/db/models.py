@@ -110,3 +110,15 @@ class Scenario(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    
+class TleSet(Base):
+    """An immutable set of TLEs. Scenarios refer to it by id, so it is never edited or deleted."""
+    __tablename__ = "tle_sets"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(80))
+    source: Mapped[str] = mapped_column(String(120))        # "paste" or "celestrak:<group>"
+    n_sats: Mapped[int]
+    epoch: Mapped[datetime] = mapped_column(DateTime(timezone=True))     # median TLE epoch
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    text: Mapped[str] = mapped_column(Text)
